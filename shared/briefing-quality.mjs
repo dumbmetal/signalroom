@@ -99,7 +99,7 @@ export function topicFingerprint(topic = {}) {
   const sharedThreshold = evidence.length >= 2 ? 2 : 1
   let terms = [...tokenCounts.entries()].filter(([, count]) => count >= sharedThreshold)
   if (terms.length < 2) terms = [...tokenCounts.entries()]
-  const strongest = terms.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).slice(0, 6).map(([term]) => term)
+  const strongest = terms.sort((left, right) => right[1] - left[1] || compareText(left[0], right[0])).slice(0, 6).map(([term]) => term)
   if (strongest.length) return `topic-${fingerprintText(`${section}:${strongest.join(':')}`)}`
   return `topic-${fingerprintText(`${section}:${normalizeContentText(topic?.title || topic?.summary || topic?.id || 'unknown')}`)}`
 }
@@ -121,19 +121,19 @@ export function recurrenceFor(topic, history, options = {}) {
   })
   if (!records.length) {
     const seenAt = now.toISOString()
-    return { authorCount: 0, publisherCount: 0, mentionCount: 0, firstSeenAt: seenAt, lastSeenAt: seenAt, windowHours: 0 }
+    return recurrenceWithObservationDays({ authorCount: 0, publisherCount: 0, mentionCount: 0, firstSeenAt: seenAt, lastSeenAt: seenAt, windowHours: 0 }, 0)
   }
   const seenTimes = records.map((record) => timestamp(record.seenAt)).filter((value) => value !== null)
   const firstSeenAt = Math.min(...seenTimes)
   const lastSeenAt = Math.max(...seenTimes)
-  return {
+  return recurrenceWithObservationDays({
     authorCount: new Set(records.map((record) => record.authorKey).filter(Boolean)).size,
     publisherCount: new Set(records.map((record) => record.publisherId).filter(Boolean)).size,
     mentionCount: records.length,
     firstSeenAt: new Date(firstSeenAt).toISOString(),
     lastSeenAt: new Date(lastSeenAt).toISOString(),
     windowHours: Math.round(((lastSeenAt - firstSeenAt) / 3_600_000) * 100) / 100,
-  }
+  }, new Set(records.map((record) => record.reportDate)).size)
 }
 
 export function enrichTopicsWithHistory(topics, previousHistory, options = {}) {
@@ -285,16 +285,25 @@ function compactTopicHistory(history, now) {
     const current = byObservation.get(key)
     if (!current || record.seenAt < current.seenAt || (record.seenAt === current.seenAt && historyRecordKey(record) < historyRecordKey(current))) byObservation.set(key, record)
   }
-  return [...byObservation.values()].sort((left, right) => left.seenAt.localeCompare(right.seenAt) || historyRecordKey(left).localeCompare(historyRecordKey(right)))
+  return [...byObservation.values()].sort((left, right) => compareText(left.seenAt, right.seenAt) || compareText(historyRecordKey(left), historyRecordKey(right)))
 }
 
 function historyRecordKey(record) {
   return `${record.publisherId}\u0000${record.authorKey}\u0000${record.contentHash}`
 }
 
+function recurrenceWithObservationDays(recurrence, observationDayCount) {
+  Object.defineProperty(recurrence, 'observationDayCount', { value: observationDayCount, enumerable: false })
+  return recurrence
+}
+
+function compareText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
 function qualifiesAsCommunityPattern(recurrence) {
   if (!recurrence || Number(recurrence.authorCount) < 3 || Number(recurrence.publisherCount) < 2) return false
-  if (Number(recurrence.observationDayCount) >= 2) return true
+  if (Number.isFinite(Number(recurrence.observationDayCount))) return Number(recurrence.observationDayCount) >= 2
   if (Array.isArray(recurrence.reportDates) && new Set(recurrence.reportDates).size >= 2) return true
   const firstDate = londonDate(recurrence.firstSeenAt)
   const lastDate = londonDate(recurrence.lastSeenAt)
@@ -303,8 +312,8 @@ function qualifiesAsCommunityPattern(recurrence) {
 
 function hasIndependentConflict(topic, evidence) {
   if (topic?.disputed === true || topic?.hasConflict === true) return true
-  const conflicts = evidence.filter((item) => item?.disputed === true || item?.conflictsWith || item?.claimStatus === 'disputed')
-  return countIndependentCorroboration(conflicts) >= 2
+  const hasExplicitConflict = evidence.some((item) => item?.disputed === true || item?.conflictsWith || item?.claimStatus === 'disputed')
+  return hasExplicitConflict && countIndependentCorroboration(evidence) >= 2
 }
 
 function promotionEndFor(topic, priceSnapshots) {

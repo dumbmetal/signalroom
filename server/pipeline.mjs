@@ -81,6 +81,7 @@ function applyEditorialSummaries(topics, summaries) {
 
 function fallbackTopic(cluster, section, index) {
   const sortedTerms = [...cluster.terms].slice(0, 4)
+  const priceKeys = [...new Set(cluster.messages.flatMap((message) => Array.isArray(message.priceKeys) ? message.priceKeys : []).filter(Boolean))]
   const evidence = selectCorroboratingEvidence(cluster.messages, 5).map((message) => ({
     source: message.source, label: message.sourceId, author: message.author, excerpt: message.text.slice(0, 240), time: message.publishedAt, url: message.url,
     sourceKey: message.sourceKey, publisherId: message.publisherId, independenceKey: independentKey(message), trustTier: message.trustTier, contentHash: message.contentHash,
@@ -93,6 +94,7 @@ function fallbackTopic(cluster, section, index) {
     signal: `${cluster.messages.length} post${cluster.messages.length === 1 ? '' : 's'} across ${sourceCount} independent source${sourceCount === 1 ? '' : 's'}`,
     sources: [...new Set(cluster.messages.map((message) => message.sourceId))],
     confidence: sourceCount >= 3 ? 'High confidence' : sourceCount === 2 ? 'Mixed signal' : 'Early signal', evidence,
+    ...(priceKeys.length ? { priceKeys } : {}),
   }
 }
 function independentKey(message) { return independenceKeyFor(message) }
