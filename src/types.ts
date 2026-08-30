@@ -15,6 +15,7 @@ export interface Evidence {
   publisherId?: string
   independenceKey?: string
   trustTier?: TrustTier
+  contentHash?: string
 }
 
 export interface Topic {

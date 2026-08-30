@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ReportService } from './report-service.mjs'
+import { ReportService, localMidnightUtc } from './report-service.mjs'
+
+test('London report windows follow GMT and BST at local midnight', () => {
+  assert.equal(localMidnightUtc('2026-01-15', 'Europe/London'), '2026-01-15T00:00:00.000Z')
+  assert.equal(localMidnightUtc('2026-07-15', 'Europe/London'), '2026-07-14T23:00:00.000Z')
+})
 
 test('ReportService propagates configured independence keys into corroborating evidence', async () => {
   const state = {
@@ -14,7 +19,7 @@ test('ReportService propagates configured independence keys into corroborating e
   const store = { read: async () => state, update: async (change) => change(state) }
   const reports = new ReportService(store, {})
   reports.adapters.Reddit = {
-    fetchSince: async (source) => [{ id: source.id, source: 'Reddit', sourceId: source.name, author: source.name, text: 'Model subscription price changed today', url: `https://example.test/${source.id}`, publishedAt: '2026-08-24T00:00:00.000Z', engagement: {} }],
+    fetchSince: async (source) => [{ id: source.id, source: 'Reddit', sourceId: source.name, author: source.name, text: source.name === 'alpha' ? 'Model subscription billing changed for teams' : 'Model subscription billing changed for team plans', url: `https://example.test/${source.id}`, publishedAt: '2026-08-24T00:00:00.000Z', engagement: {} }],
   }
 
   const report = await reports.generate('2026-08-24', true)

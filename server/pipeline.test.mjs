@@ -15,6 +15,13 @@ test('does not corroborate two labels belonging to one publisher', () => {
   ])
   assert.equal(corroboratedClusters(clusters).length, 0)
 })
+test('does not corroborate identical cross-posts from different source labels', () => {
+  const clusters = clusterMessages([
+    message('1', 'Forwarded model subscription price update', 'channel-a'),
+    message('2', 'Forwarded model subscription price update', 'channel-b'),
+  ])
+  assert.equal(corroboratedClusters(clusters).length, 0)
+})
 test('evidence preserves every qualifying independent publisher before extra posts', async () => {
   const publisherA = Array.from({ length: 6 }, (_, index) => ({ ...message(`a-${index}`, `Model subscription price changed today ${index}`, `channel-a-${index}`), independenceKey: 'vendor-a' }))
   const publisherB = { ...message('b', 'Model subscription price changed today confirmed', 'channel-b'), independenceKey: 'vendor-b' }

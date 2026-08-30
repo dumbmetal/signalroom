@@ -1,4 +1,4 @@
-import { canonicalizeUrl, fingerprintText, independenceKeyFor, normalizeIdentityKey, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { canonicalizeUrl, countIndependentCorroboration, fingerprintText, independenceKeyFor, normalizeIdentityKey, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
 
 const STOP_WORDS = new Set(['about', 'after', 'again', 'also', 'and', 'are', 'been', 'before', 'being', 'between', 'but', 'can', 'could', 'from', 'have', 'into', 'more', 'most', 'not', 'over', 'that', 'the', 'their', 'there', 'they', 'this', 'through', 'today', 'very', 'what', 'when', 'where', 'which', 'while', 'with', 'would', 'your'])
 
@@ -51,7 +51,7 @@ export function clusterMessages(messages) {
 
 export function rankClusters(clusters, now = Date.now()) {
   return clusters.map((cluster) => {
-    const sourceCount = new Set(cluster.messages.map(independentKey)).size
+    const sourceCount = countIndependentCorroboration(cluster.messages)
     const engagement = cluster.messages.reduce((sum, message) => sum + Object.values(message.engagement || {}).reduce((a, value) => a + (Number(value) || 0), 0), 0)
     const recency = cluster.messages.reduce((sum, message) => sum + Math.max(0, 1 - (now - new Date(message.publishedAt).getTime()) / 86_400_000), 0)
     return { ...cluster, score: cluster.messages.length * 3 + sourceCount * 4 + Math.log10(engagement + 1) * 2 + recency }
@@ -59,7 +59,7 @@ export function rankClusters(clusters, now = Date.now()) {
 }
 
 export function corroboratedClusters(clusters, minimumSources = 2) {
-  return clusters.filter((cluster) => new Set(cluster.messages.map(independentKey)).size >= minimumSources)
+  return clusters.filter((cluster) => countIndependentCorroboration(cluster.messages) >= minimumSources)
 }
 
 export async function summarizeClusters(clusters, section, provider = null) {
@@ -74,9 +74,9 @@ function fallbackTopic(cluster, section, index) {
   const sortedTerms = [...cluster.terms].slice(0, 4)
   const evidence = selectCorroboratingEvidence(cluster.messages, 5).map((message) => ({
     source: message.source, label: message.sourceId, author: message.author, excerpt: message.text.slice(0, 240), time: message.publishedAt, url: message.url,
-    sourceKey: message.sourceKey, publisherId: message.publisherId, independenceKey: independentKey(message), trustTier: message.trustTier,
+    sourceKey: message.sourceKey, publisherId: message.publisherId, independenceKey: independentKey(message), trustTier: message.trustTier, contentHash: message.contentHash,
   }))
-  const sourceCount = new Set(cluster.messages.map(independentKey)).size
+  const sourceCount = countIndependentCorroboration(cluster.messages)
   const lead = cluster.messages[0]?.text || 'Emerging conversation'
   return {
     id: `${section}-${index + 1}-${sortedTerms.join('-')}`.slice(0, 80), rank: index + 1, section,

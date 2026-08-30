@@ -27,6 +27,18 @@ test('report normalization removes imported single-source topics and reranks', (
   assert.equal(report.topics[0].rank, 1)
 })
 
+test('report normalization keeps URL-only legacy evidence from independent sources', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'legacy-url-only',
+    evidence: [
+      { source: 'Reddit', label: 'alpha', url: 'https://reddit.com/r/alpha/1' },
+      { source: 'Reddit', label: 'beta', url: 'https://reddit.com/r/beta/2' },
+    ],
+  }], sourceRuns: [] })
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].independentSourceCount, 2)
+})
+
 test('evidence always contains every corroborating channel before extra posts', () => {
   const manyAlpha = Array.from({ length: 7 }, (_, index) => post('alpha', `BTC ETF inflow update ${index}`, 20 - index, index + 1))
   const topics = buildTopics([...manyAlpha, post('beta', 'BTC ETF inflow update confirmed', 10, 99)])
@@ -38,6 +50,14 @@ test('worker excludes matching posts from one independent publisher', () => {
   const topics = buildTopics([
     { ...post('channel-a', 'MODEL subscription price update', 20, 1), independenceKey: 'vendor-copy' },
     { ...post('channel-b', 'MODEL subscription price update', 19, 2), independenceKey: 'vendor-copy' },
+  ])
+  assert.equal(topics.length, 0)
+})
+
+test('worker excludes identical cross-posts from different source labels', () => {
+  const topics = buildTopics([
+    post('channel-a', 'FORWARDED model subscription price update', 20, 1),
+    post('channel-b', 'FORWARDED model subscription price update', 19, 2),
   ])
   assert.equal(topics.length, 0)
 })
@@ -54,7 +74,10 @@ test('worker crawl propagates configured independence keys into corroborating ev
   const originalFetch = globalThis.fetch
   const now = Math.floor(Date.now() / 1000)
   const reports = new Map()
-  globalThis.fetch = async (url) => new Response(JSON.stringify({ data: { children: [{ data: { name: String(url).includes('alpha') ? 'a' : 'b', title: 'Model subscription price changed today', selftext: '', permalink: String(url).includes('alpha') ? '/r/alpha/a' : '/r/beta/b', created_utc: now, score: 1 } }] } }))
+  globalThis.fetch = async (url) => {
+    const alpha = String(url).includes('alpha')
+    return new Response(JSON.stringify({ data: { children: [{ data: { name: alpha ? 'a' : 'b', title: alpha ? 'Model subscription billing changed for teams' : 'Model subscription billing changed for team plans', selftext: '', permalink: alpha ? '/r/alpha/a' : '/r/beta/b', created_utc: now, score: 1 } }] } }))
+  }
   try {
     const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
       REPORTS: { get: async (key) => reports.get(key) || null, put: async (key, value) => reports.set(key, value) },

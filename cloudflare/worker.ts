@@ -1,4 +1,4 @@
-import { annotateMessage, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { annotateMessage, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
 
 interface Env {
   REPORTS: KVNamespace
@@ -170,11 +170,11 @@ export function buildTopics(messages: Message[]) {
     } else clusters.push({ terms: new Set(terms), posts: [post], postTerms: [{ sourceId: post.sourceId, independenceKey: independentKey(post), terms }] })
   }
 
-  return clusters.filter((cluster) => new Set(cluster.posts.map(independentKey)).size >= 2).map((cluster) => {
+  return clusters.filter((cluster) => countIndependentCorroboration(cluster.posts) >= 2).map((cluster) => {
     const sources = [...new Set(cluster.posts.map((post) => post.sourceId))]
     const engagement = cluster.posts.reduce((sum, post) => sum + post.engagement, 0)
     const newest = Math.max(...cluster.posts.map((post) => Date.parse(post.publishedAt)))
-    const sourceCount = new Set(cluster.posts.map(independentKey)).size
+    const sourceCount = countIndependentCorroboration(cluster.posts)
     const score = sourceCount * 10_000 + cluster.posts.length * 100 + Math.log10(engagement + 1) * 10 + newest / 1e13
     const term = strongestTerm(cluster)
     const section = cluster.posts.every((post) => post.source === 'Telegram') ? 'crypto' : 'ai'
@@ -215,7 +215,7 @@ function strongestTerm(cluster: { terms: Set<string>; posts: Message[] }) {
   return strongest.replace(/^asset:/, '')
 }
 function selectEvidence(posts: Message[], limit = 6) {
-  return selectCorroboratingEvidence(posts, limit).map((post: Message) => ({ source: post.source, label: post.sourceId, author: post.sourceId, excerpt: post.text.slice(0, 500), time: relativeTime(post.publishedAt), url: post.url, sourceKey: post.sourceKey, publisherId: post.publisherId, independenceKey: independentKey(post), trustTier: post.trustTier }))
+  return selectCorroboratingEvidence(posts, limit).map((post: Message) => ({ source: post.source, label: post.sourceId, author: post.sourceId, excerpt: post.text.slice(0, 500), time: relativeTime(post.publishedAt), url: post.url, sourceKey: post.sourceKey, publisherId: post.publisherId, independenceKey: independentKey(post), trustTier: post.trustTier, contentHash: post.contentHash }))
 }
 function dedupeWithinSources(messages: Message[]) {
   const seen = new Set<string>()
@@ -247,10 +247,10 @@ function normalizeTopic(topic: any, index = 0) {
     author: item.author || item.sourceId || 'Unknown author',
     excerpt: item.excerpt || item.text || '',
     time: item.time || relativeTime(item.publishedAt || new Date().toISOString()),
-    url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: item.trustTier || 'community',
+    url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: item.trustTier || 'community', contentHash: item.contentHash,
   })).filter((item: any) => item.excerpt || item.url) : []
   const sources = [...new Set(evidence.map((item: any) => item.label).filter((label: string) => label && label !== 'Unknown source'))]
-  const independentSourceCount = new Set(evidence.map((item: any) => item.independenceKey).filter(Boolean)).size
+  const independentSourceCount = countIndependentCorroboration(evidence)
   return { ...topic, id: topic?.id || `topic-${index + 1}`, rank: Number(topic?.rank || index + 1), sources, independentSourceCount, evidence }
 }
 

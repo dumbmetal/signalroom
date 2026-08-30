@@ -24,11 +24,27 @@ export function canonicalizeUrl(value) {
 
 export function fingerprintText(value) {
   let hash = 2166136261
-  for (const character of String(value || '').toLowerCase().replace(/\s+/g, ' ').trim()) {
+  for (const character of normalizeContentText(value)) {
     hash ^= character.codePointAt(0)
     hash = Math.imul(hash, 16777619)
   }
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`
+}
+
+export function normalizeContentText(value) {
+  return String(value || '').normalize('NFKC')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export function normalizeIdentityKey(value) {
@@ -52,6 +68,47 @@ export function independenceKeyFor(message) {
   return firstIdentity(message?.independenceKey, message?.publisherId, message?.sourceKey, `${message?.source || 'Unknown'}:${message?.sourceId || 'source'}`)
 }
 
+export function contentHashFor(message) {
+  if (message?.contentHash) return String(message.contentHash)
+  const content = String(message?.text || message?.excerpt || '').trim()
+  if (content) return fingerprintText(content)
+  const url = canonicalizeUrl(message?.canonicalUrl || message?.url)
+  if (url) return `url:${url}`
+  return `identity:${independenceKeyFor(message)}:${String(message?.externalId || message?.id || message?.sourceId || '')}`
+}
+
+export function selectIndependentEvidence(messages) {
+  const representativeByContentHash = new Map()
+  for (const message of messages) {
+    const contentHash = contentHashFor(message)
+    const current = representativeByContentHash.get(contentHash)
+    if (!current || precedesRepresentative(message, current)) representativeByContentHash.set(contentHash, message)
+  }
+  const selected = []
+  const selectedIndependenceKeys = new Set()
+  for (const message of representativeByContentHash.values()) {
+    const independenceKey = independenceKeyFor(message)
+    if (selectedIndependenceKeys.has(independenceKey)) continue
+    selected.push(message)
+    selectedIndependenceKeys.add(independenceKey)
+  }
+  return selected
+}
+
+function precedesRepresentative(candidate, current) {
+  const candidateTime = Date.parse(candidate?.publishedAt || '')
+  const currentTime = Date.parse(current?.publishedAt || '')
+  const normalizedCandidateTime = Number.isFinite(candidateTime) ? candidateTime : Number.POSITIVE_INFINITY
+  const normalizedCurrentTime = Number.isFinite(currentTime) ? currentTime : Number.POSITIVE_INFINITY
+  if (normalizedCandidateTime !== normalizedCurrentTime) return normalizedCandidateTime < normalizedCurrentTime
+  const key = (message) => `${canonicalizeUrl(message?.canonicalUrl || message?.url)}\u0000${independenceKeyFor(message)}\u0000${String(message?.sourceId || '')}`
+  return key(candidate) < key(current)
+}
+
+export function countIndependentCorroboration(messages) {
+  return selectIndependentEvidence(messages).length
+}
+
 export function selectCorroboratingEvidence(messages, limit = 6) {
   const selected = []
   const selectedIndependenceKeys = new Set()
@@ -66,9 +123,9 @@ export function selectCorroboratingEvidence(messages, limit = 6) {
     selectedSourceIds.add(sourceId)
     if (url) selectedUrls.add(url)
   }
-  for (const message of messages) {
+  for (const message of selectIndependentEvidence(messages)) {
     if (selected.length >= limit) break
-    if (!selectedIndependenceKeys.has(independenceKeyFor(message))) add(message)
+    add(message)
   }
   for (const message of messages) {
     if (selected.length >= limit) break

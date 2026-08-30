@@ -74,7 +74,7 @@ export function normalizeSourceDefinition(source) {
   return { ...source, sourceKey, publisherId, independenceKey: String(source.independenceKey || source.config?.independenceKey || publisherId), trustTier: source.trustTier || source.config?.trustTier || 'community' }
 }
 export function annotateMessage(message, source) {
-  return { ...message, externalId: String(message.externalId || message.id || message.url || fingerprintText(message.text)), sourceKey: source.sourceKey, publisherId: source.publisherId, independenceKey: source.independenceKey, trustTier: source.trustTier, canonicalUrl: canonicalizeUrl(message.url), contentHash: fingerprintText(`${message.text}\n${message.url || ''}`) }
+  return { ...message, externalId: String(message.externalId || message.id || message.url || fingerprintText(message.text)), sourceKey: source.sourceKey, publisherId: source.publisherId, independenceKey: source.independenceKey, trustTier: source.trustTier, canonicalUrl: canonicalizeUrl(message.url), contentHash: fingerprintText(message.text) }
 }
 ```
 
@@ -219,7 +219,7 @@ Run: `node --test --experimental-strip-types server/*.test.mjs cloudflare/*.test
 
 Expected: tests pass; record any pnpm environment-hook failure separately rather than altering dependency approval settings.
 
-Observed: the direct suite passed (14 tests). `pnpm build` was blocked before compilation by the pre-existing ambient `ERR_PNPM_IGNORED_BUILDS` policy for `opencode-ai@1.18.25`, which is not a Signalroom dependency; no approval setting was changed.
+Observed: the direct suite passed. The first `pnpm` attempt was absorbed by `/Users/sungha/pnpm-workspace.yaml` and inspected the unrelated home-level `opencode-ai` dependency. Running Signalroom with `--ignore-workspace` used this repository's frozen lockfile and required no global build-script approval.
 
 ### Task 5: Review and checkpoint the PR
 
@@ -238,7 +238,7 @@ Run: `node --test --experimental-strip-types server/*.test.mjs cloudflare/*.test
 
 Expected: all tests pass with no failures.
 
-Observed: 20 direct tests passed. Independent review found and the suite now covers evidence-cap preservation, normalized identity keys, source-config validation, shared fallbacks, and configured-source ingestion in both runtimes.
+Observed: 27 tests passed. The suite covers evidence-cap preservation, normalized identity keys, source-config validation, shared fallbacks, configured-source ingestion in both runtimes, exact cross-post rejection, deterministic copy-origin ordering, URL-only legacy reports, markup variants, and the pre-existing London DST window.
 
 - [x] **Step 3: Commit the focused PR branch**
 
@@ -249,4 +249,45 @@ git commit -m "feat: add briefing evidence contract"
 
 Expected: one focused commit on `feat/briefing-evidence-contract`; do not push or open a PR without an explicit request.
 
-Observed: one focused local commit was created; it has not been pushed and no pull request was opened.
+Observed: the original focused implementation commit was created locally; review follow-ups remain on the same branch. Nothing has been pushed and no pull request has been opened.
+
+### Task 6: Close review gaps for copied content and baseline coverage
+
+**Files:**
+- Modify: `shared/briefing-contract.mjs`
+- Modify: `server/pipeline.mjs`
+- Modify: `server/pipeline.test.mjs`
+- Modify: `server/report-service.test.mjs`
+- Modify: `cloudflare/worker.ts`
+- Modify: `cloudflare/worker.test.mjs`
+- Modify: `src/types.ts`
+
+- [x] **Step 1: Write failing regressions for identical cross-posts**
+
+Run: `node --test --test-name-pattern='identical cross-posts' server/pipeline.test.mjs`
+
+Run: `node --test --experimental-strip-types --test-name-pattern='identical cross-posts' cloudflare/worker.test.mjs`
+
+Observed: both tests failed with `1 !== 0`, proving that different source labels still promoted identical copied text when no manual `independenceKey` was configured.
+
+- [x] **Step 2: Count only distinct publisher and content evidence**
+
+Add `contentHashFor`, `selectIndependentEvidence`, and `countIndependentCorroboration` to the shared contract. Collapse identical content to its earliest published representative before counting publishers, then use the shared count for Node and Worker qualification, ranking, confidence, signals, evidence metadata, and imported-report normalization.
+
+- [x] **Step 3: Restore the removed London timezone regression**
+
+Keep the original GMT/BST assertions in `server/report-service.test.mjs` alongside the new service integration test.
+
+- [x] **Step 4: Run repository-isolated verification**
+
+Run: `pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts`
+
+Run: `pnpm --ignore-workspace test`
+
+Run: `pnpm --ignore-workspace build`
+
+Observed: 27 tests passed; TypeScript and Vite production build completed successfully.
+
+- [x] **Step 5: Resolve independent review findings**
+
+Add RED tests for URL-only legacy evidence, equal-time/reversed-order duplicate attribution, and HTML/entity versus plain-text copies. Use canonical URL or evidence identity when text is absent, deterministic URL/source tie-breaking when timestamps match, and shared content normalization before hashing.
