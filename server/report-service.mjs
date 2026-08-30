@@ -1,11 +1,12 @@
 import { createAdapters } from './adapters.mjs'
-import { clusterMessages, corroboratedClusters, dedupeMessages, rankClusters, summarizeClusters } from './pipeline.mjs'
+import { clusterMessages, dedupeMessages, rankClusters, summarizeClusters } from './pipeline.mjs'
 import { annotateMessage, normalizeSourceDefinition } from '../shared/briefing-contract.mjs'
 import { OFFICIAL_SOURCE_KINDS, getOfficialSource } from '../shared/official-source-catalog.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
+import { enrichTopicsWithHistory, isReportableTopic, topicHistoryFromReports } from '../shared/briefing-quality.mjs'
 
 export class ReportService {
-  constructor(store, env = process.env) { this.store = store; this.env = env; this.adapters = createAdapters(env); this.inFlight = null }
+  constructor(store, env = process.env, clock = () => new Date()) { this.store = store; this.env = env; this.clock = clock; this.adapters = createAdapters(env); this.inFlight = null }
   async generate(date = localDate(new Date(), 'Europe/London'), force = false) {
     if (this.inFlight) return this.inFlight
     this.inFlight = this.#generate(date, force).finally(() => { this.inFlight = null })
@@ -15,6 +16,7 @@ export class ReportService {
     const data = await this.store.read()
     const existing = data.reports.find((report) => report.date === date)
     if (existing && !force) return existing
+    const now = this.clock()
     const since = localMidnightUtc(date, 'Europe/London')
     const grouped = { crypto: [], ai: [] }
     const sourceRuns = []
@@ -38,14 +40,19 @@ export class ReportService {
     }
     const provider = createSummaryProvider(this.env)
     const topics = []
-    for (const section of ['crypto', 'ai']) {
-      const messages = dedupeMessages(grouped[section])
-      const clusters = rankClusters(corroboratedClusters(clusterMessages(messages)))
-      topics.push(...await summarizeClusters(clusters, section, provider))
-    }
+    let topicHistory = topicHistoryFromReports(data.reports, { now })
     const previousPrices = existing?.priceSnapshots || data.reports.find((report) => report.date !== date && Array.isArray(report.priceSnapshots))?.priceSnapshots || []
     const priceSnapshots = mergePriceSnapshots(previousPrices, observations)
-    const report = { date, generatedAt: new Date().toISOString(), topics, sourceRuns, priceSnapshots, delivery: { telegram: 'pending' } }
+    for (const section of ['crypto', 'ai']) {
+      const messages = dedupeMessages(grouped[section])
+      const clusters = rankClusters(clusterMessages(messages), now.getTime())
+      const summarized = await summarizeClusters(clusters, section, provider)
+      const enriched = enrichTopicsWithHistory(summarized, topicHistory, { now, reportDate: date, priceSnapshots })
+      topicHistory = enriched.topicHistory
+      topics.push(...enriched.topics.filter(isReportableTopic).map((topic, index) => ({ ...topic, rank: index + 1 })))
+    }
+    const report = { date, generatedAt: now.toISOString(), topics, topicHistory, sourceRuns, delivery: { telegram: 'pending' } }
+    report.priceSnapshots = priceSnapshots
     await this.store.update((current) => { current.reports = current.reports.filter((item) => item.date !== date); current.reports.unshift(report); current.reports = current.reports.slice(0, 90); return current })
     if (data.settings.telegramEnabled) await this.deliver(report)
     return report
