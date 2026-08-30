@@ -28,4 +28,17 @@ test('evidence preserves every qualifying independent publisher before extra pos
   const topic = (await summarizeClusters(corroboratedClusters(clusterMessages([...publisherA, publisherB])), 'ai'))[0]
   assert.deepEqual(new Set(topic.evidence.map((item) => item.independenceKey)), new Set(['vendor-a', 'vendor-b']))
 })
+test('near-deduplicates within a publisher while preserving cross-publisher corroboration', async () => {
+  const shared = 'Model subscription pricing changed today for enterprise customers in Europe with annual billing'
+  const input = [
+    { ...message('a-first', shared, 'channel-a'), independenceKey: 'publisher-a', publishedAt: '2026-08-24T08:00:00.000Z' },
+    { ...message('a-near-copy', `${shared} details`, 'channel-a-copy'), independenceKey: 'publisher-a', publishedAt: '2026-08-24T09:00:00.000Z' },
+    { ...message('b-independent', `${shared} independently confirmed`, 'channel-b'), independenceKey: 'publisher-b', publishedAt: '2026-08-24T10:00:00.000Z' },
+  ]
+  const deduped = dedupeMessages(input)
+  assert.deepEqual(deduped.map((item) => item.id), ['a-first', 'b-independent'])
+  const topics = await summarizeClusters(corroboratedClusters(clusterMessages(deduped)), 'ai')
+  assert.equal(topics.length, 1)
+  assert.deepEqual(new Set(topics[0].evidence.map((item) => item.independenceKey)), new Set(['publisher-a', 'publisher-b']))
+})
 test('keeps source failures isolated through contract behavior', async () => { const successful = await Promise.allSettled([Promise.resolve([message('1', 'Working source')]), Promise.reject(new Error('rate limited'))]); assert.equal(successful[0].status, 'fulfilled'); assert.equal(successful[1].status, 'rejected') })

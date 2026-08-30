@@ -1,4 +1,4 @@
-import { countIndependentCorroboration, normalizeContentText } from './briefing-contract.mjs'
+import { canonicalizeUrl, countIndependentCorroboration, independenceKeyFor, normalizeContentText } from './briefing-contract.mjs'
 
 const DAY = 86_400_000
 const CONTENT_TYPES = new Set(['product_update', 'price_change', 'discount_offer', 'setup_tip', 'community_opinion'])
@@ -61,6 +61,30 @@ export function enrichTopic(topic, options = {}) {
   }
 }
 
+export function dedupeNearDuplicates(messages, options = {}) {
+  const threshold = Number.isFinite(options.threshold) ? options.threshold : 0.82
+  const minimumTokens = Number.isFinite(options.minimumTokens) ? options.minimumTokens : 6
+  const kept = []
+  for (const message of messages) {
+    const normalizedText = duplicateText(message)
+    if (!normalizedText) continue
+    const publisher = independenceKeyFor(message)
+    const tokens = duplicateTokens(normalizedText)
+    const canonicalUrl = canonicalizeUrl(message?.canonicalUrl || message?.url)
+    const duplicateIndex = kept.findIndex((candidate) => candidate.publisher === publisher && (
+      normalizedText === candidate.normalizedText
+      || Boolean(canonicalUrl && canonicalUrl === candidate.canonicalUrl)
+      || hasHighTokenOverlap(tokens, candidate.tokens, threshold, minimumTokens)
+    ))
+    if (duplicateIndex < 0) {
+      kept.push({ message, publisher, normalizedText, tokens, canonicalUrl })
+    } else if (precedesDuplicate(message, kept[duplicateIndex].message)) {
+      kept[duplicateIndex] = { message, publisher, normalizedText, tokens, canonicalUrl }
+    }
+  }
+  return kept.map((entry) => entry.message)
+}
+
 function matchingPriceSnapshots(topic, priceSnapshots) {
   if (!Array.isArray(priceSnapshots)) return []
   const keys = new Set(Array.isArray(topic?.priceKeys) ? topic.priceKeys.map(String) : [])
@@ -91,6 +115,32 @@ function topicText(topic) {
     topic?.summary,
     ...(Array.isArray(topic?.evidence) ? topic.evidence.flatMap((item) => [item?.excerpt, item?.text]) : []),
   ].filter(Boolean).join(' '))
+}
+
+function duplicateText(message) {
+  return normalizeContentText(String(message?.text || message?.excerpt || '').replace(/https?:\/\/\S+/gi, ' '))
+}
+
+function duplicateTokens(text) {
+  return new Set(text.match(/[\p{L}\p{N}][\p{L}\p{N}._-]*/gu) || [])
+}
+
+function hasHighTokenOverlap(left, right, threshold, minimumTokens) {
+  if (Math.min(left.size, right.size) < minimumTokens) return false
+  let intersection = 0
+  for (const token of left) if (right.has(token)) intersection += 1
+  const union = left.size + right.size - intersection
+  return union > 0 && intersection / union >= threshold
+}
+
+function precedesDuplicate(candidate, current) {
+  const candidateTime = timestamp(candidate?.publishedAt || candidate?.observedAt || candidate?.time)
+  const currentTime = timestamp(current?.publishedAt || current?.observedAt || current?.time)
+  if (candidateTime !== null && currentTime !== null && candidateTime !== currentTime) return candidateTime < currentTime
+  if (candidateTime !== null && currentTime === null) return true
+  if (candidateTime === null && currentTime !== null) return false
+  const key = (item) => `${canonicalizeUrl(item?.canonicalUrl || item?.url)}\u0000${String(item?.externalId || item?.id || item?.sourceId || '')}`
+  return key(candidate) < key(current)
 }
 
 function qualifiesAsCommunityPattern(recurrence) {

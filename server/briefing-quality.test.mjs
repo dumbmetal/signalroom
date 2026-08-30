@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { claimStatusFor, classifyContent, enrichTopic, freshnessFor } from '../shared/briefing-quality.mjs'
+import { claimStatusFor, classifyContent, dedupeNearDuplicates, enrichTopic, freshnessFor } from '../shared/briefing-quality.mjs'
 
 const DAY = 86_400_000
 const NOW = new Date('2026-08-31T12:00:00.000Z')
@@ -116,4 +116,30 @@ test('enriches a classifiable topic without replacing editorial text or evidence
   assert.equal(enriched.title, topic.title)
   assert.equal(enriched.summary, topic.summary)
   assert.deepEqual(enriched.evidence, topic.evidence)
+})
+
+test('collapses markup and case variants from the same publisher', () => {
+  const messages = [
+    { id: 'first', independenceKey: 'publisher-a', text: '<b>MODEL</b> pricing &amp; annual billing changed', publishedAt: '2026-08-31T08:00:00.000Z' },
+    { id: 'second', independenceKey: 'publisher-a', text: 'model pricing & annual billing changed', publishedAt: '2026-08-31T09:00:00.000Z' },
+  ]
+  assert.deepEqual(dedupeNearDuplicates(messages).map((message) => message.id), ['first'])
+})
+
+test('suppresses only high-overlap posts within one publisher', () => {
+  const shared = 'Model subscription pricing changed today for enterprise customers in Europe with annual billing'
+  const messages = [
+    { id: 'a-first', independenceKey: 'publisher-a', text: shared, publishedAt: '2026-08-31T08:00:00.000Z' },
+    { id: 'a-near-copy', independenceKey: 'publisher-a', text: `${shared} details`, publishedAt: '2026-08-31T09:00:00.000Z' },
+    { id: 'b-independent', independenceKey: 'publisher-b', text: `${shared} independently confirmed`, publishedAt: '2026-08-31T10:00:00.000Z' },
+  ]
+  assert.deepEqual(dedupeNearDuplicates(messages).map((message) => message.id), ['a-first', 'b-independent'])
+})
+
+test('does not collapse short or merely related posts', () => {
+  const messages = [
+    { id: 'one', independenceKey: 'publisher-a', text: 'Model price rose', publishedAt: '2026-08-31T08:00:00.000Z' },
+    { id: 'two', independenceKey: 'publisher-a', text: 'Model price fell', publishedAt: '2026-08-31T09:00:00.000Z' },
+  ]
+  assert.equal(dedupeNearDuplicates(messages).length, 2)
 })
