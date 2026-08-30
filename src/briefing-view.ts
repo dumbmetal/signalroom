@@ -55,9 +55,9 @@ export interface SourceHealthSummary {
 
 export function normalizeLiveReport(input: unknown): BriefingReport | null {
   if (!isRecord(input)) return null
-  const date = requiredText(input.date)
+  const date = calendarDate(input.date)
   const generatedAt = isoDate(input.generatedAt)
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !generatedAt || !Array.isArray(input.topics)) return null
+  if (!date || !generatedAt || !Array.isArray(input.topics)) return null
 
   const topics: Topic[] = []
   for (const item of input.topics) {
@@ -65,6 +65,7 @@ export function normalizeLiveReport(input: unknown): BriefingReport | null {
     if (!normalized) return null
     topics.push(normalized)
   }
+  if (new Set(topics.map((topic) => topic.id)).size !== topics.length) return null
 
   if (input.priceSnapshots !== undefined && !Array.isArray(input.priceSnapshots)) return null
   const priceSnapshots = Array.isArray(input.priceSnapshots)
@@ -178,6 +179,7 @@ function normalizeTopic(input: unknown): Topic | null {
     if (!normalized) return null
     evidence.push(normalized)
   }
+  if (evidence.length === 0) return null
 
   const contentType = optionalEnum(input.contentType, CONTENT_TYPES)
   const status = optionalEnum(input.status, CLAIM_STATUSES)
@@ -209,10 +211,10 @@ function normalizeEvidence(input: unknown): Evidence | null {
   const source = requiredText(input.source)
   const label = requiredText(input.label)
   const author = requiredText(input.author)
-  const excerpt = requiredText(input.excerpt)
+  const excerpt = typeof input.excerpt === 'string' ? input.excerpt.trim() : null
   const time = requiredText(input.time)
   const url = safeHttpUrl(input.url)
-  if (!source || !label || !author || !excerpt || !time || !url) return null
+  if (!source || !label || !author || excerpt === null || !time || !url) return null
   const sourceKey = optionalText(input.sourceKey)
   const publisherId = optionalText(input.publisherId)
   const independenceKey = optionalText(input.independenceKey)
@@ -280,7 +282,11 @@ function normalizeSourceRun(input: unknown): SourceRun | null {
   const source = requiredText(input.source) || requiredText(input.sourceId)
   if (!source) return null
   const explicitStatus = typeof input.status === 'string' && SOURCE_RUN_STATUSES.has(input.status as SourceRunStatus) ? input.status as SourceRunStatus : undefined
-  const warningInputs = Array.isArray(input.warnings) ? input.warnings : input.warning === undefined ? [] : [input.warning]
+  const warningInputs = Array.isArray(input.warnings)
+    ? input.warnings
+    : input.warnings !== undefined
+      ? [input.warnings]
+      : input.warning === undefined ? [] : [input.warning]
   const warnings = warningInputs.map((warning) => safeSourceCopy(warning, 'Source returned a warning.')).filter((warning): warning is string => Boolean(warning))
   const status = explicitStatus ?? (input.ok === false || input.error !== undefined ? 'error' : warnings.length ? 'partial' : input.ok === true ? 'ok' : undefined)
   if (!status) return null
@@ -345,6 +351,13 @@ function uniqueTextArray(value: unknown): string[] | null {
 function isoDate(value: unknown) {
   const text = requiredText(value)
   return text && Number.isFinite(Date.parse(text)) ? text : null
+}
+
+function calendarDate(value: unknown) {
+  const text = requiredText(value)
+  if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) return null
+  const parsed = new Date(`${text}T00:00:00.000Z`)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === text ? text : null
 }
 
 function optionalIsoDate(value: unknown): string | undefined | null {

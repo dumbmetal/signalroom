@@ -83,7 +83,27 @@ class MemoryStorage {
 test('rejects malformed reports instead of casting unknown data', () => {
   assert.equal(normalizeLiveReport(null), null)
   assert.equal(normalizeLiveReport({ date: '2026-08-31', generatedAt: 'not-a-date', topics: [] }), null)
+  assert.equal(normalizeLiveReport(report({ date: '2026-02-31' })), null)
   assert.equal(normalizeLiveReport(report({ topics: [{ id: 'missing-required-topic-fields' }] })), null)
+})
+
+test('rejects topics that cannot keep evidence URLs one click away', () => {
+  assert.equal(normalizeLiveReport(report({ topics: [topic({ evidence: [] })] })), null)
+})
+
+test('keeps URL-only legacy evidence clickable without inventing an excerpt', () => {
+  const normalized = normalizeLiveReport(report({ topics: [topic({
+    contentType: undefined,
+    evidence: [{
+      source: 'Reddit',
+      label: 'legacy-source',
+      author: 'legacy-source',
+      excerpt: '',
+      time: '1h ago',
+      url: 'https://example.test/legacy-evidence',
+    }],
+  })] }))
+  assert.equal(normalized?.topics[0].evidence[0].excerpt, '')
 })
 
 test('normalizes a valid report and preserves optional briefing metadata', () => {
@@ -142,7 +162,7 @@ test('normalizes source and sourceId runs with ok, partial, and error states', (
   const normalized = normalizeLiveReport(report({ sourceRuns: [
     { source: 'openai-release-feed', ok: true, count: 3, checkedAt: '2026-08-31T00:01:00.000Z' },
     { sourceId: 'openai-pricing-kr', status: 'partial', kind: 'OfficialPricing', count: 1, warnings: ['KRW price was unavailable'], checkedAt: '2026-08-31T00:03:00.000Z' },
-    { sourceId: 'community-reddit', status: 'error', count: 0, error: '<html>Bearer secret-token response body</html>', checkedAt: '2026-08-31T00:02:00.000Z' },
+    { sourceId: 'community-reddit', status: 'error', count: 0, error: '<html>Bearer redacted-value response body</html>', checkedAt: '2026-08-31T00:02:00.000Z' },
   ] }))
   assert.ok(normalized?.sourceRuns)
 
@@ -153,6 +173,13 @@ test('normalizes source and sourceId runs with ok, partial, and error states', (
   ])
   assert.equal(normalized.sourceRuns[1].warnings[0], 'KRW price was unavailable')
   assert.equal(normalized.sourceRuns[2].error, 'Source check failed.')
+})
+
+test('normalizes a source warning supplied as one string', () => {
+  const normalized = normalizeLiveReport(report({ sourceRuns: [
+    { source: 'pricing', status: 'partial', count: 0, warnings: 'Parser found no prices' },
+  ] }))
+  assert.deepEqual(normalized?.sourceRuns?.[0].warnings, ['Parser found no prices'])
 })
 
 test('does not interpret missing sourceRuns as zero live sources', () => {
@@ -278,6 +305,13 @@ test('creates stable, distinct, HTML-safe disclosure IDs', () => {
   assert.match(first.buttonId, /^[a-z][a-z0-9-]+$/)
   assert.match(first.panelId, /^[a-z][a-z0-9-]+$/)
   assert.notEqual(first.buttonId, first.panelId)
+})
+
+test('rejects duplicate topic IDs before they can collide in disclosure controls', () => {
+  assert.equal(normalizeLiveReport(report({ topics: [
+    topic({ id: 'duplicate-topic', rank: 1 }),
+    topic({ id: 'duplicate-topic', rank: 2 }),
+  ] })), null)
 })
 
 test('loadLiveReport rejects malformed JSON shapes from a successful HTTP response', async () => {
