@@ -9,7 +9,7 @@
     "build": "node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview",
     "start": "node server/server.mjs",
-    "test": "node --test --experimental-strip-types server/*.test.mjs cloudflare/*.test.mjs"
+    "test": "node --test --experimental-strip-types server/*.test.mjs cloudflare/*.test.mjs src/*.test.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "6.0.5",
