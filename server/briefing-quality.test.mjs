@@ -99,6 +99,12 @@ test('reports a single primary claim and confirms only independent corroboration
   assert.equal(claimStatusFor({ evidence: [primary, evidence('openai-blog', { independenceKey: 'openai', publisherId: 'openai' })] }, { now: NOW }), 'reported')
 })
 
+test('marks an explicit conflict between independent publishers as disputed', () => {
+  const primary = evidence('vendor', { trustTier: 'primary', contentHash: 'vendor-claim' })
+  const contradiction = evidence('independent-news', { contentHash: 'contradiction', conflictsWith: 'vendor-claim' })
+  assert.equal(claimStatusFor({ evidence: [primary, contradiction] }, { now: NOW }), 'disputed')
+})
+
 test('expired promotion overrides corroboration and generic freshness', () => {
   const topic = { priceKeys: ['chatgpt-plus-offer'], evidence: [evidence('openai', { trustTier: 'primary' }), evidence('independent-news')] }
   const priceSnapshots = [{ key: 'chatgpt-plus-offer', lastVerifiedAt: '2026-08-31T10:00:00.000Z', promotion: { kind: 'discount', label: 'Launch offer', endsAt: '2026-08-31T11:59:59.000Z' } }]
@@ -259,6 +265,24 @@ test('rejects a community pattern below the author or multi-day threshold', () =
     { publisher: 'forum', author: 'bob', text: 'Local model memory pressure epsilon', time: '2026-08-31T08:00:00.000Z', contentHash: 'epsilon' },
   ])], { now: NOW, reportDate: '2026-08-31' })
   assert.equal(classifyContent({ evidence: [], recurrence: recurrenceFor(twoAuthors, history, { now: NOW }) }), null)
+})
+
+test('uses London report dates rather than generation timestamps for the multi-day threshold', () => {
+  const sameInstant = new Date('2026-08-31T12:00:00.000Z')
+  const first = communityTopic('ai-1-local-model-memory-pressure', [
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure first report', time: '2026-08-30T08:00:00.000Z', contentHash: 'report-day-one' },
+  ])
+  const second = communityTopic('ai-2-local-model-memory-pressure', [
+    { publisher: 'reddit', author: 'bob', text: 'Local model memory pressure second report', time: '2026-08-31T08:00:00.000Z', contentHash: 'report-day-two-a' },
+    { publisher: 'forum', author: 'carol', text: 'Local model memory pressure independent report', time: '2026-08-31T09:00:00.000Z', contentHash: 'report-day-two-b' },
+  ])
+  let history = updateTopicHistory([], [first], { now: sameInstant, reportDate: '2026-08-30' })
+  history = updateTopicHistory(history, [second], { now: sameInstant, reportDate: '2026-08-31' })
+  assert.equal(classifyContent({ evidence: [], recurrence: recurrenceFor(second, history, { now: sameInstant }) }), 'community_opinion')
+
+  let oneDateHistory = updateTopicHistory([], [first], { now: new Date('2026-08-30T12:00:00.000Z'), reportDate: '2026-08-31' })
+  oneDateHistory = updateTopicHistory(oneDateHistory, [second], { now: sameInstant, reportDate: '2026-08-31' })
+  assert.equal(classifyContent({ evidence: [], recurrence: recurrenceFor(second, oneDateHistory, { now: sameInstant }) }), null)
 })
 
 test('retains compact topic history for at most thirty days', () => {

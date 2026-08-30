@@ -60,4 +60,12 @@ test('allows model summaries to update only title and summary', async () => {
   assert.equal(topics[0].recurrence, undefined)
   assert.equal(topics[0].priceKeys, undefined)
 })
+test('carries deterministic price keys from clustered messages into the topic', async () => {
+  const input = [
+    { ...message('1', 'Vendor Pro annual subscription price changed', 'vendor'), independenceKey: 'vendor', priceKeys: ['vendor-pro-usd-year'] },
+    { ...message('2', 'Vendor Pro subscription pricing independently confirmed', 'news'), independenceKey: 'news', priceKeys: ['vendor-pro-usd-year'] },
+  ]
+  const topic = (await summarizeClusters(clusterMessages(input), 'ai'))[0]
+  assert.deepEqual(topic.priceKeys, ['vendor-pro-usd-year'])
+})
 test('keeps source failures isolated through contract behavior', async () => { const successful = await Promise.allSettled([Promise.resolve([message('1', 'Working source')]), Promise.reject(new Error('rate limited'))]); assert.equal(successful[0].status, 'fulfilled'); assert.equal(successful[1].status, 'rejected') })
