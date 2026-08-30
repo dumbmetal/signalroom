@@ -41,4 +41,23 @@ test('near-deduplicates within a publisher while preserving cross-publisher corr
   assert.equal(topics.length, 1)
   assert.deepEqual(new Set(topics[0].evidence.map((item) => item.independenceKey)), new Set(['publisher-a', 'publisher-b']))
 })
+test('allows model summaries to update only title and summary', async () => {
+  const input = [message('1', 'Stablecoin settlement payments infrastructure grows', 'a'), message('2', 'Stablecoin payments settlement adoption expands', 'b')]
+  const clusters = rankClusters(clusterMessages(input), new Date('2026-08-24T01:00:00.000Z').getTime())
+  const topics = await summarizeClusters(clusters, 'ai', async () => [{
+    title: 'Editorial title',
+    summary: 'Editorial summary',
+    evidence: [],
+    status: 'confirmed',
+    freshness: 'fresh',
+    recurrence: { authorCount: 99 },
+    priceKeys: ['invented-price'],
+  }])
+  assert.equal(topics[0].title, 'Editorial title')
+  assert.equal(topics[0].summary, 'Editorial summary')
+  assert.equal(topics[0].evidence.length, 2)
+  assert.equal(topics[0].status, undefined)
+  assert.equal(topics[0].recurrence, undefined)
+  assert.equal(topics[0].priceKeys, undefined)
+})
 test('keeps source failures isolated through contract behavior', async () => { const successful = await Promise.allSettled([Promise.resolve([message('1', 'Working source')]), Promise.reject(new Error('rate limited'))]); assert.equal(successful[0].status, 'fulfilled'); assert.equal(successful[1].status, 'rejected') })

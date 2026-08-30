@@ -1,6 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { claimStatusFor, classifyContent, dedupeNearDuplicates, enrichTopic, freshnessFor } from '../shared/briefing-quality.mjs'
+import {
+  claimStatusFor,
+  classifyContent,
+  dedupeNearDuplicates,
+  enrichTopic,
+  enrichTopicsWithHistory,
+  freshnessFor,
+  recurrenceFor,
+  topicFingerprint,
+  updateTopicHistory,
+} from '../shared/briefing-quality.mjs'
 
 const DAY = 86_400_000
 const NOW = new Date('2026-08-31T12:00:00.000Z')
@@ -62,6 +72,24 @@ test('classifies all five briefing content types deterministically', () => {
 test('does not classify one-off community chatter as a recurring opinion', () => {
   const recurrence = { authorCount: 2, publisherCount: 2, mentionCount: 2, observationDayCount: 1, firstSeenAt: '2026-08-31T08:00:00.000Z', lastSeenAt: '2026-08-31T09:00:00.000Z', windowHours: 1 }
   assert.equal(classifyContent({ evidence: [evidence('reddit'), evidence('forum')], recurrence }), null)
+})
+
+test('classifies official announcement wording as a product update', () => {
+  for (const excerpt of [
+    'Introducing the new reasoning model',
+    'The desktop app is now available',
+    'Anthropic announces a new Claude capability',
+    'Open WebUI updated its workspace controls',
+  ]) {
+    assert.equal(classifyContent({ evidence: [evidence('vendor', { source: 'OfficialFeed', trustTier: 'primary', excerpt })] }), 'product_update', excerpt)
+  }
+})
+
+test('accepts corroborated community setup guidance but excludes a single community tip', () => {
+  const first = evidence('reddit', { source: 'Reddit', trustTier: 'community', excerpt: 'How to configure Ollama context limits on macOS', contentHash: 'setup-reddit' })
+  const second = evidence('forum', { source: 'Threads', trustTier: 'community', excerpt: 'Ollama context limit configuration guide for macOS', contentHash: 'setup-forum' })
+  assert.equal(classifyContent({ evidence: [first] }), null)
+  assert.equal(classifyContent({ evidence: [first, second] }), 'setup_tip')
 })
 
 test('reports a single primary claim and confirms only independent corroboration', () => {
@@ -142,4 +170,101 @@ test('does not collapse short or merely related posts', () => {
     { id: 'two', independenceKey: 'publisher-a', text: 'Model price fell', publishedAt: '2026-08-31T09:00:00.000Z' },
   ]
   assert.equal(dedupeNearDuplicates(messages).length, 2)
+})
+
+function communityTopic(id, items) {
+  return {
+    id,
+    section: 'ai',
+    title: 'Local model memory pressure',
+    summary: 'Developers compare local model memory pressure.',
+    evidence: items.map(({ publisher, author, text, time, contentHash }) => evidence(publisher, {
+      source: 'Reddit',
+      trustTier: 'community',
+      author,
+      excerpt: text,
+      time,
+      url: `https://${publisher}.example/${contentHash}`,
+      contentHash,
+    })),
+  }
+}
+
+test('creates a stable fingerprint across rank, ordering, markup, and extra detail changes', () => {
+  const first = communityTopic('ai-1-local-model-memory-pressure', [
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure affects long context sessions', time: '2026-08-30T08:00:00.000Z', contentHash: 'a' },
+    { publisher: 'forum', author: 'bob', text: 'Long context local model memory pressure is widely reported', time: '2026-08-30T09:00:00.000Z', contentHash: 'b' },
+  ])
+  const second = communityTopic('ai-9-local-model-memory-pressure', [
+    { publisher: 'forum', author: 'bob', text: '<b>Long context</b> local model memory pressure is widely reported with benchmarks', time: '2026-08-31T09:00:00.000Z', contentHash: 'c' },
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure affects long context sessions today', time: '2026-08-31T08:00:00.000Z', contentHash: 'd' },
+  ])
+  assert.equal(topicFingerprint(first), topicFingerprint(second))
+})
+
+test('uses an inclusive rolling seven-day recurrence cutoff', () => {
+  const now = new Date('2026-08-31T12:00:00.000Z')
+  const old = communityTopic('ai-1-local-model-memory-pressure', [{ publisher: 'reddit', author: 'old', text: 'Local model memory pressure old mention', time: '2026-08-23T11:59:59.999Z', contentHash: 'old' }])
+  const boundary = communityTopic('ai-2-local-model-memory-pressure', [{ publisher: 'reddit', author: 'boundary', text: 'Local model memory pressure boundary mention', time: '2026-08-24T12:00:00.000Z', contentHash: 'boundary' }])
+  const current = communityTopic('ai-3-local-model-memory-pressure', [{ publisher: 'forum', author: 'current', text: 'Local model memory pressure current mention', time: now.toISOString(), contentHash: 'current' }])
+  let history = updateTopicHistory([], [old], { now: new Date('2026-08-23T11:59:59.999Z'), reportDate: '2026-08-23' })
+  history = updateTopicHistory(history, [boundary], { now: new Date('2026-08-24T12:00:00.000Z'), reportDate: '2026-08-24' })
+  history = updateTopicHistory(history, [current], { now, reportDate: '2026-08-31' })
+  const recurrence = recurrenceFor(current, history, { now })
+  assert.equal(recurrence.mentionCount, 2)
+  assert.equal(recurrence.authorCount, 2)
+  assert.equal(recurrence.publisherCount, 2)
+  assert.equal(recurrence.firstSeenAt, '2026-08-24T12:00:00.000Z')
+})
+
+test('derives unique recurrence counts from non-copied evidence across report dates', () => {
+  const dayOne = communityTopic('ai-1-local-model-memory-pressure', [
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure original observation', time: '2026-08-30T08:00:00.000Z', contentHash: 'original' },
+    { publisher: 'forum', author: 'copycat', text: 'Local model memory pressure original observation', time: '2026-08-30T09:00:00.000Z', contentHash: 'original' },
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure followup measurement', time: '2026-08-30T10:00:00.000Z', contentHash: 'followup' },
+  ])
+  const dayTwo = communityTopic('ai-2-local-model-memory-pressure', [
+    { publisher: 'forum', author: 'bob', text: 'Local model memory pressure reproduced independently', time: '2026-08-31T08:00:00.000Z', contentHash: 'bob' },
+    { publisher: 'reddit', author: 'carol', text: 'Local model memory pressure appears in another runtime', time: '2026-08-31T09:00:00.000Z', contentHash: 'carol' },
+  ])
+  let history = updateTopicHistory([], [dayOne], { now: new Date('2026-08-30T12:00:00.000Z'), reportDate: '2026-08-30' })
+  const result = enrichTopicsWithHistory([dayTwo], history, { now: NOW, reportDate: '2026-08-31' })
+  const recurrence = result.topics[0].recurrence
+  assert.deepEqual(recurrence, {
+    authorCount: 3,
+    publisherCount: 2,
+    mentionCount: 4,
+    firstSeenAt: '2026-08-30T12:00:00.000Z',
+    lastSeenAt: '2026-08-31T12:00:00.000Z',
+    windowHours: 24,
+  })
+  assert.equal(result.topics[0].contentType, 'community_opinion')
+  assert.equal(result.topics[0].status, 'confirmed')
+})
+
+test('rejects a community pattern below the author or multi-day threshold', () => {
+  const oneDay = communityTopic('ai-1-local-model-memory-pressure', [
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure alpha', time: '2026-08-31T08:00:00.000Z', contentHash: 'alpha' },
+    { publisher: 'forum', author: 'bob', text: 'Local model memory pressure beta', time: '2026-08-31T09:00:00.000Z', contentHash: 'beta' },
+    { publisher: 'reddit', author: 'carol', text: 'Local model memory pressure gamma', time: '2026-08-31T10:00:00.000Z', contentHash: 'gamma' },
+  ])
+  const oneDayResult = enrichTopicsWithHistory([oneDay], [], { now: NOW, reportDate: '2026-08-31' })
+  assert.equal(oneDayResult.topics[0].contentType, undefined)
+
+  const twoAuthors = communityTopic('ai-2-local-model-memory-pressure', [
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure delta', time: '2026-08-30T08:00:00.000Z', contentHash: 'delta' },
+  ])
+  let history = updateTopicHistory([], [twoAuthors], { now: new Date('2026-08-30T12:00:00.000Z'), reportDate: '2026-08-30' })
+  history = updateTopicHistory(history, [communityTopic('ai-3-local-model-memory-pressure', [
+    { publisher: 'forum', author: 'bob', text: 'Local model memory pressure epsilon', time: '2026-08-31T08:00:00.000Z', contentHash: 'epsilon' },
+  ])], { now: NOW, reportDate: '2026-08-31' })
+  assert.equal(classifyContent({ evidence: [], recurrence: recurrenceFor(twoAuthors, history, { now: NOW }) }), null)
+})
+
+test('retains compact topic history for at most thirty days', () => {
+  const old = communityTopic('ai-1-local-model-memory-pressure', [{ publisher: 'reddit', author: 'old', text: 'Local model memory pressure old', time: '2026-07-31T12:00:00.000Z', contentHash: 'old-30' }])
+  const recent = communityTopic('ai-2-local-model-memory-pressure', [{ publisher: 'forum', author: 'recent', text: 'Local model memory pressure recent', time: '2026-08-31T12:00:00.000Z', contentHash: 'recent-30' }])
+  let history = updateTopicHistory([], [old], { now: new Date('2026-07-31T12:00:00.000Z'), reportDate: '2026-07-31' })
+  history = updateTopicHistory(history, [recent], { now: NOW, reportDate: '2026-08-31' })
+  assert.deepEqual(history.map((record) => record.contentHash), ['recent-30'])
 })

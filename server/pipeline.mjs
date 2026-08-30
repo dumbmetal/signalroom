@@ -57,10 +57,26 @@ export function corroboratedClusters(clusters, minimumSources = 2) {
 
 export async function summarizeClusters(clusters, section, provider = null) {
   if (!clusters.length) return []
+  const deterministic = clusters.map((cluster, index) => fallbackTopic(cluster, section, index))
   if (provider) {
-    try { return await provider(clusters, section) } catch (error) { console.warn(`Summary provider failed; using deterministic fallback: ${error.message}`) }
+    try { return applyEditorialSummaries(deterministic, await provider(clusters, section)) } catch (error) { console.warn(`Summary provider failed; using deterministic fallback: ${error.message}`) }
   }
-  return clusters.map((cluster, index) => fallbackTopic(cluster, section, index))
+  return deterministic
+}
+
+function applyEditorialSummaries(topics, summaries) {
+  if (!Array.isArray(summaries)) return topics
+  return topics.map((topic, index) => {
+    const summary = summaries.find((candidate) => candidate?.id === topic.id)
+      || summaries.find((candidate) => Number(candidate?.rank) === topic.rank)
+      || summaries[index]
+    if (!summary) return topic
+    return {
+      ...topic,
+      title: typeof summary.title === 'string' && summary.title.trim() ? summary.title.trim() : topic.title,
+      summary: typeof summary.summary === 'string' && summary.summary.trim() ? summary.summary.trim() : topic.summary,
+    }
+  })
 }
 
 function fallbackTopic(cluster, section, index) {

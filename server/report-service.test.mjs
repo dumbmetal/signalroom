@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { ReportService, localMidnightUtc } from './report-service.mjs'
 import { getOfficialSource } from '../shared/official-source-catalog.mjs'
 import { normalizePriceObservation } from '../shared/price-snapshots.mjs'
+import { updateTopicHistory } from '../shared/briefing-quality.mjs'
 
 test('London report windows follow GMT and BST at local midnight', () => {
   assert.equal(localMidnightUtc('2026-01-15', 'Europe/London'), '2026-01-15T00:00:00.000Z')
@@ -29,6 +30,7 @@ test('ReportService propagates configured independence keys into corroborating e
   assert.deepEqual(new Set(report.topics[0].evidence.map((item) => item.independenceKey)), new Set(['vendor-a', 'vendor-b']))
 })
 
+<<<<<<< HEAD
 test('ReportService persists official messages and price history while isolating a failed source', async () => {
   const previousPrice = normalizePriceObservation({
     vendor: 'OpenAI', product: 'ChatGPT', plan: 'Plus', region: 'US', currency: 'USD', amountMinor: 1_500,
@@ -218,4 +220,84 @@ test('ReportService redacts credential key-values before persisting source-run e
     'Source error details redacted',
     'Source error details redacted',
   ])
+})
+
+test('ReportService promotes a recurring multi-day community pattern from prior compact history', async () => {
+  const previousTopic = {
+    id: 'ai-1-local-model-memory-usage',
+    section: 'ai',
+    title: 'Local model memory usage',
+    summary: 'A prior observation.',
+    evidence: [{ source: 'Reddit', label: 'alpha', author: 'alice', excerpt: 'Local model memory usage improves across long context sessions', time: '2026-08-30T08:00:00.000Z', url: 'https://example.test/old', independenceKey: 'publisher-a', publisherId: 'publisher-a', trustTier: 'community', contentHash: 'old-observation' }],
+  }
+  const previousHistory = updateTopicHistory([], [previousTopic], { now: new Date('2026-08-30T12:00:00.000Z'), reportDate: '2026-08-30' })
+  const state = {
+    sources: [
+      { id: 'source-a', kind: 'Reddit', name: 'alpha', section: 'ai', enabled: true, config: { independenceKey: 'publisher-a' } },
+      { id: 'source-b', kind: 'Reddit', name: 'beta', section: 'ai', enabled: true, config: { independenceKey: 'publisher-b' } },
+    ],
+    reports: [{ date: '2026-08-30', generatedAt: '2026-08-30T12:00:00.000Z', topics: [], topicHistory: previousHistory }],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {}, () => new Date('2026-08-31T12:00:00.000Z'))
+  reports.adapters.Reddit = {
+    fetchSince: async (source) => [{
+      id: source.id,
+      source: 'Reddit',
+      sourceId: source.name,
+      author: source.name === 'alpha' ? 'bob' : 'carol',
+      text: source.name === 'alpha' ? 'Local model memory usage improves across long context workloads' : 'Local model memory usage improves for long context sessions',
+      url: `https://example.test/${source.id}`,
+      publishedAt: '2026-08-31T08:00:00.000Z',
+      engagement: {},
+    }],
+  }
+
+  const report = await reports.generate('2026-08-31', true)
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].contentType, 'community_opinion')
+  assert.equal(report.topics[0].status, 'confirmed')
+  assert.deepEqual(report.topics[0].recurrence, {
+    authorCount: 3,
+    publisherCount: 2,
+    mentionCount: 3,
+    firstSeenAt: '2026-08-30T12:00:00.000Z',
+    lastSeenAt: '2026-08-31T12:00:00.000Z',
+    windowHours: 24,
+  })
+  assert.equal(report.topicHistory.length, 3)
+})
+
+test('ReportService retains single-source legacy evidence in history without publishing it', async () => {
+  const state = {
+    sources: [{ id: 'source-a', kind: 'Reddit', name: 'alpha', section: 'ai', enabled: true, config: { independenceKey: 'publisher-a' } }],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {}, () => new Date('2026-08-31T12:00:00.000Z'))
+  reports.adapters.Reddit = {
+    fetchSince: async () => [{ id: 'single', source: 'Reddit', sourceId: 'alpha', author: 'alice', text: 'Local inference memory pressure observation', url: 'https://example.test/single', publishedAt: '2026-08-31T08:00:00.000Z', engagement: {} }],
+  }
+  const report = await reports.generate('2026-08-31', true)
+  assert.equal(report.topics.length, 0)
+  assert.equal(report.topicHistory.length, 1)
+})
+
+test('ReportService publishes a single official release only as reported', async () => {
+  const state = {
+    sources: [{ id: 'official-release', kind: 'OfficialFeed', name: 'Vendor releases', section: 'ai', enabled: true, trustTier: 'maintainer', config: { independenceKey: 'vendor' } }],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {}, () => new Date('2026-08-31T12:00:00.000Z'))
+  reports.adapters.OfficialFeed = {
+    fetchSince: async () => [{ id: 'release', source: 'OfficialFeed', sourceId: 'Vendor releases', author: 'vendor', text: 'Introducing Vendor Model v2 release notes', url: 'https://vendor.example/releases/v2', publishedAt: '2026-08-31T08:00:00.000Z', engagement: {} }],
+  }
+  const report = await reports.generate('2026-08-31', true)
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].contentType, 'product_update')
+  assert.equal(report.topics[0].status, 'reported')
 })

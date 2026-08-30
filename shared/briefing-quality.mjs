@@ -1,4 +1,4 @@
-import { canonicalizeUrl, countIndependentCorroboration, independenceKeyFor, normalizeContentText } from './briefing-contract.mjs'
+import { canonicalizeUrl, contentHashFor, countIndependentCorroboration, fingerprintText, independenceKeyFor, normalizeContentText, normalizeIdentityKey } from './briefing-contract.mjs'
 
 const DAY = 86_400_000
 const CONTENT_TYPES = new Set(['product_update', 'price_change', 'discount_offer', 'setup_tip', 'community_opinion'])
@@ -10,7 +10,7 @@ const FRESHNESS_WINDOWS = {
   community_opinion: [7, 30],
 }
 const SETUP_PATTERN = /\b(?:how[\s-]?to|install(?:ation|ing|ed)?|configur(?:e|ation|ing|ed)?|set[\s-]?up|setup|getting started|quickstart|guide|docker|environment variable|api key)\b/i
-const RELEASE_PATTERN = /\b(?:release(?:d|s| notes?)?|changelog|launch(?:ed|es)?|version\s+v?\d|v\d+(?:\.\d+)+)\b/i
+const RELEASE_PATTERN = /\b(?:release(?:d|s| notes?)?|changelog|launch(?:ed|es)?|introduc(?:e|es|ed|ing)|now available|announc(?:e|es|ed|ing)|update(?:d|s)?|version\s+v?\d|v\d+(?:\.\d+)+)\b/i
 
 export function classifyContent(topic = {}, context = {}) {
   const evidence = Array.isArray(topic.evidence) ? topic.evidence : []
@@ -19,7 +19,7 @@ export function classifyContent(topic = {}, context = {}) {
   if (hasPricingMetadata) return priceSnapshots.some((snapshot) => snapshot?.promotion) || topic?.promotion ? 'discount_offer' : 'price_change'
 
   const text = topicText(topic)
-  if (SETUP_PATTERN.test(text) && hasOfficialEvidence(evidence)) return 'setup_tip'
+  if (SETUP_PATTERN.test(text) && (hasOfficialEvidence(evidence) || countIndependentCorroboration(evidence) >= 2)) return 'setup_tip'
   if (RELEASE_PATTERN.test(text) && hasOfficialReleaseEvidence(evidence)) return 'product_update'
   if (qualifiesAsCommunityPattern(topic.recurrence)) return 'community_opinion'
   return null
@@ -31,6 +31,7 @@ export function claimStatusFor(topic = {}, options = {}) {
   if (promotionEndsAt !== null && promotionEndsAt <= now) return 'expired'
   const evidence = Array.isArray(topic.evidence) ? topic.evidence : []
   if (hasIndependentConflict(topic, evidence)) return 'disputed'
+  if (qualifiesAsCommunityPattern(topic.recurrence)) return 'confirmed'
   return countIndependentCorroboration(evidence) >= 2 ? 'confirmed' : 'reported'
 }
 
@@ -85,6 +86,88 @@ export function dedupeNearDuplicates(messages, options = {}) {
   return kept.map((entry) => entry.message)
 }
 
+export function topicFingerprint(topic = {}) {
+  const section = String(topic?.section || 'unknown').toLowerCase()
+  const idTokens = stableIdTokens(topic?.id)
+  if (idTokens.length >= 2) return `topic-${fingerprintText(`${section}:${idTokens.join(':')}`)}`
+
+  const evidence = Array.isArray(topic?.evidence) ? topic.evidence : []
+  const tokenCounts = new Map()
+  for (const item of evidence) {
+    for (const token of fingerprintTokens(item?.excerpt || item?.text || '')) tokenCounts.set(token, (tokenCounts.get(token) || 0) + 1)
+  }
+  const sharedThreshold = evidence.length >= 2 ? 2 : 1
+  let terms = [...tokenCounts.entries()].filter(([, count]) => count >= sharedThreshold)
+  if (terms.length < 2) terms = [...tokenCounts.entries()]
+  const strongest = terms.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).slice(0, 6).map(([term]) => term)
+  if (strongest.length) return `topic-${fingerprintText(`${section}:${strongest.join(':')}`)}`
+  return `topic-${fingerprintText(`${section}:${normalizeContentText(topic?.title || topic?.summary || topic?.id || 'unknown')}`)}`
+}
+
+export function updateTopicHistory(previousHistory, topics, options = {}) {
+  const now = dateFrom(options.now ?? Date.now())
+  const reportDate = validReportDate(options.reportDate) || londonDate(now)
+  const current = (Array.isArray(topics) ? topics : []).flatMap((topic) => historyRecordsForTopic(topic, { now, reportDate }))
+  return compactTopicHistory([...(Array.isArray(previousHistory) ? previousHistory : []), ...current], now)
+}
+
+export function recurrenceFor(topic, history, options = {}) {
+  const now = dateFrom(options.now ?? Date.now())
+  const cutoff = now.getTime() - 7 * DAY
+  const fingerprint = topicFingerprint(topic)
+  const records = compactTopicHistory(history, now).filter((record) => {
+    const seenAt = timestamp(record.seenAt)
+    return record.fingerprint === fingerprint && seenAt !== null && seenAt >= cutoff && seenAt <= now.getTime()
+  })
+  if (!records.length) {
+    const seenAt = now.toISOString()
+    return { authorCount: 0, publisherCount: 0, mentionCount: 0, firstSeenAt: seenAt, lastSeenAt: seenAt, windowHours: 0 }
+  }
+  const seenTimes = records.map((record) => timestamp(record.seenAt)).filter((value) => value !== null)
+  const firstSeenAt = Math.min(...seenTimes)
+  const lastSeenAt = Math.max(...seenTimes)
+  return {
+    authorCount: new Set(records.map((record) => record.authorKey).filter(Boolean)).size,
+    publisherCount: new Set(records.map((record) => record.publisherId).filter(Boolean)).size,
+    mentionCount: records.length,
+    firstSeenAt: new Date(firstSeenAt).toISOString(),
+    lastSeenAt: new Date(lastSeenAt).toISOString(),
+    windowHours: Math.round(((lastSeenAt - firstSeenAt) / 3_600_000) * 100) / 100,
+  }
+}
+
+export function enrichTopicsWithHistory(topics, previousHistory, options = {}) {
+  const topicHistory = updateTopicHistory(previousHistory, topics, options)
+  return {
+    topics: (Array.isArray(topics) ? topics : []).map((topic) => {
+      const recurrence = recurrenceFor(topic, topicHistory, options)
+      return enrichTopic({ ...topic, recurrence }, options)
+    }),
+    topicHistory,
+  }
+}
+
+export function isReportableTopic(topic) {
+  if (topic?.contentType === 'community_opinion') return qualifiesAsCommunityPattern(topic?.recurrence)
+  if (CONTENT_TYPES.has(topic?.contentType)) return true
+  return countIndependentCorroboration(Array.isArray(topic?.evidence) ? topic.evidence : []) >= 2
+}
+
+export function topicHistoryFromReports(reports, options = {}) {
+  const now = dateFrom(options.now ?? Date.now())
+  const records = []
+  for (const report of Array.isArray(reports) ? reports : []) {
+    if (Array.isArray(report?.topicHistory)) {
+      records.push(...report.topicHistory)
+      continue
+    }
+    const reportNow = dateFrom(report?.generatedAt || `${validReportDate(report?.date) || londonDate(now)}T12:00:00.000Z`)
+    const reportDate = validReportDate(report?.date) || londonDate(reportNow)
+    for (const topic of Array.isArray(report?.topics) ? report.topics : []) records.push(...historyRecordsForTopic(topic, { now: reportNow, reportDate }))
+  }
+  return compactTopicHistory(records, now)
+}
+
 function matchingPriceSnapshots(topic, priceSnapshots) {
   if (!Array.isArray(priceSnapshots)) return []
   const keys = new Set(Array.isArray(topic?.priceKeys) ? topic.priceKeys.map(String) : [])
@@ -125,6 +208,21 @@ function duplicateTokens(text) {
   return new Set(text.match(/[\p{L}\p{N}][\p{L}\p{N}._-]*/gu) || [])
 }
 
+const FINGERPRINT_STOP_WORDS = new Set(['about', 'after', 'also', 'and', 'are', 'change', 'changed', 'community', 'conversation', 'current', 'details', 'for', 'from', 'has', 'have', 'independent', 'independently', 'model', 'new', 'news', 'now', 'report', 'reported', 'the', 'this', 'today', 'topic', 'update', 'updated', 'with'])
+
+function stableIdTokens(value) {
+  const tokens = normalizeContentText(value).split(/[^\p{L}\p{N}._]+/gu).filter(Boolean)
+  if (['ai', 'crypto'].includes(tokens[0])) tokens.shift()
+  if (/^\d+$/.test(tokens[0] || '')) tokens.shift()
+  if (/^\d{10,}$/.test(tokens.at(-1) || '')) tokens.pop()
+  return tokens.filter((token) => token.length >= 2 && !FINGERPRINT_STOP_WORDS.has(token)).slice(0, 6)
+}
+
+function fingerprintTokens(value) {
+  return [...new Set(normalizeContentText(value).match(/[\p{L}\p{N}][\p{L}\p{N}._-]*/gu) || [])]
+    .filter((token) => token.length >= 3 && !FINGERPRINT_STOP_WORDS.has(token) && !/^\d+$/.test(token))
+}
+
 function hasHighTokenOverlap(left, right, threshold, minimumTokens) {
   if (Math.min(left.size, right.size) < minimumTokens) return false
   let intersection = 0
@@ -141,6 +239,57 @@ function precedesDuplicate(candidate, current) {
   if (candidateTime === null && currentTime !== null) return false
   const key = (item) => `${canonicalizeUrl(item?.canonicalUrl || item?.url)}\u0000${String(item?.externalId || item?.id || item?.sourceId || '')}`
   return key(candidate) < key(current)
+}
+
+function historyRecordsForTopic(topic, { now, reportDate }) {
+  const fingerprint = topicFingerprint(topic)
+  return attributedEvidence(Array.isArray(topic?.evidence) ? topic.evidence : []).map((item) => {
+    const publisherId = independenceKeyFor(item)
+    const author = normalizeIdentityKey(item?.author)
+    return {
+      fingerprint,
+      reportDate,
+      seenAt: now.toISOString(),
+      authorKey: author || `${publisherId}:unknown`,
+      publisherId,
+      contentHash: contentHashFor(item),
+    }
+  })
+}
+
+function attributedEvidence(evidence) {
+  const representatives = new Map()
+  for (const item of dedupeNearDuplicates(evidence)) {
+    const contentHash = contentHashFor(item)
+    const current = representatives.get(contentHash)
+    if (!current || precedesDuplicate(item, current)) representatives.set(contentHash, item)
+  }
+  return [...representatives.values()]
+}
+
+function compactTopicHistory(history, now) {
+  const cutoff = now.getTime() - 30 * DAY
+  const byObservation = new Map()
+  for (const input of Array.isArray(history) ? history : []) {
+    const seenAt = timestamp(input?.seenAt)
+    if (!input?.fingerprint || !input?.contentHash || seenAt === null || seenAt < cutoff || seenAt > now.getTime()) continue
+    const record = {
+      fingerprint: String(input.fingerprint),
+      reportDate: validReportDate(input.reportDate) || londonDate(new Date(seenAt)),
+      seenAt: new Date(seenAt).toISOString(),
+      authorKey: normalizeIdentityKey(input.authorKey) || `${normalizeIdentityKey(input.publisherId) || 'unknown'}:unknown`,
+      publisherId: normalizeIdentityKey(input.publisherId) || 'unknown',
+      contentHash: String(input.contentHash),
+    }
+    const key = `${record.fingerprint}\u0000${record.contentHash}`
+    const current = byObservation.get(key)
+    if (!current || record.seenAt < current.seenAt || (record.seenAt === current.seenAt && historyRecordKey(record) < historyRecordKey(current))) byObservation.set(key, record)
+  }
+  return [...byObservation.values()].sort((left, right) => left.seenAt.localeCompare(right.seenAt) || historyRecordKey(left).localeCompare(historyRecordKey(right)))
+}
+
+function historyRecordKey(record) {
+  return `${record.publisherId}\u0000${record.authorKey}\u0000${record.contentHash}`
 }
 
 function qualifiesAsCommunityPattern(recurrence) {
@@ -182,6 +331,15 @@ function timestamp(value) {
   if (typeof value !== 'string' || !value.trim()) return null
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function dateFrom(value) {
+  const parsed = timestamp(value)
+  return new Date(parsed === null ? Date.now() : parsed)
+}
+
+function validReportDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
 }
 
 function londonDate(value) {
