@@ -1,4 +1,5 @@
 import { canonicalizeUrl, countIndependentCorroboration, fingerprintText, independenceKeyFor, normalizeIdentityKey, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { dedupeNearDuplicates } from '../shared/briefing-quality.mjs'
 
 const STOP_WORDS = new Set(['about', 'after', 'again', 'also', 'and', 'are', 'been', 'before', 'being', 'between', 'but', 'can', 'could', 'from', 'have', 'into', 'more', 'most', 'not', 'over', 'that', 'the', 'their', 'there', 'they', 'this', 'through', 'today', 'very', 'what', 'when', 'where', 'which', 'while', 'with', 'would', 'your'])
 
@@ -17,15 +18,7 @@ export function normalizeMessage(input) {
 }
 
 export function dedupeMessages(messages) {
-  const seen = new Set()
-  return messages.filter((message) => {
-    const normalized = normalizeMessage(message)
-    const textKey = normalized.text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 180)
-    const key = normalized.canonicalUrl || normalized.url || `${normalized.source}:${textKey}`
-    if (!textKey || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  return dedupeNearDuplicates(messages.map((message) => ({ ...message, ...normalizeMessage(message) })))
 }
 
 export function clusterMessages(messages) {
