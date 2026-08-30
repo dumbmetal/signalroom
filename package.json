@@ -1,0 +1,23 @@
+{
+  "name": "signalroom",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "dev": "node node_modules/vite/bin/vite.js",
+    "build": "node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build",
+    "preview": "node node_modules/vite/bin/vite.js preview",
+    "start": "node server/server.mjs",
+    "test": "node --test --experimental-strip-types server/*.test.mjs cloudflare/*.test.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.0.5",
+    "lucide-react": "1.31.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "5.9.3",
+    "vite": "8.2.1"
+  },
+  "devDependencies": {}
+}
