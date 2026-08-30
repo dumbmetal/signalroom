@@ -8,7 +8,7 @@ import {
   listOfficialSources,
   resolveOfficialSource,
 } from '../shared/official-source-catalog.mjs'
-import { parseOfficialFeed, parseOfficialPage, parseOfficialPricing } from '../shared/official-source-parsers.mjs'
+import { collectOfficialSource, parseOfficialFeed, parseOfficialPage, parseOfficialPricing } from '../shared/official-source-parsers.mjs'
 
 const fixture = (name) => readFile(new URL(`./fixtures/official/${name}`, import.meta.url), 'utf8')
 
@@ -41,6 +41,20 @@ test('official redirects stay HTTPS and inside the catalog host allowlist', () =
   assert.equal(isAllowedOfficialSourceUrl(source, 'https://attacker.example/openai.xml'), false)
   assert.equal(isAllowedOfficialSourceUrl(source, 'http://openai.com/news/rss.xml'), false)
   assert.equal(isAllowedOfficialSourceUrl(source, 'http://127.0.0.1/admin'), false)
+})
+
+test('official collection refuses an allowlisted source redirect to a private URL', async () => {
+  const requested = []
+  const fetchImpl = async (url) => {
+    requested.push(String(url))
+    return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/private' } })
+  }
+
+  await assert.rejects(() => collectOfficialSource(
+    { kind: 'OfficialFeed', config: { catalogId: 'openai-news', url: 'https://attacker.example/feed' } },
+    { since: '2026-08-30T00:00:00.000Z', fetchImpl },
+  ), /redirect was not allowlisted/i)
+  assert.deepEqual(requested, ['https://openai.com/news/rss.xml'])
 })
 
 test('normalizes Atom entries and excludes entries older than since', async () => {
@@ -80,6 +94,16 @@ test('normalizes a catalog-selected official article page', () => {
   assert.equal(messages[0].publishedAt, '2026-08-31T08:00:00.000Z')
 })
 
+test('normalizes the latest LM Studio changelog release from its official page', async () => {
+  const source = getOfficialSource('lmstudio-changelog')
+  const messages = parseOfficialPage(source, await fixture('lmstudio-changelog.html'), '2026-08-20T00:00:00.000Z')
+
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].externalId, 'lm-studio-0.4.23')
+  assert.equal(messages[0].text, 'LM Studio 0.4.23 Improve reliability of Qwen 3.8 Flash Next')
+  assert.equal(messages[0].publishedAt, '2026-08-28T00:00:00.000Z')
+})
+
 test('extracts required official USD plans and fails closed after parser drift', async () => {
   const source = getOfficialSource('openai-chatgpt-plus-usd')
   const parsed = parseOfficialPricing(source, await fixture('pricing-us.html'), '2026-08-31T10:00:00.000Z')
@@ -90,4 +114,16 @@ test('extracts required official USD plans and fails closed after parser drift',
   assert.equal(parsed.observations[0].currency, 'USD')
   assert.equal(parsed.observations[0].amountMinor, 2_000)
   assert.throws(() => parseOfficialPricing(source, '<html><h1>Pricing temporarily unavailable</h1></html>', '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
+})
+
+test('extracts Claude Pro USD from the official Anthropic support page fixture', async () => {
+  const source = getOfficialSource('anthropic-claude-pro-usd')
+  const page = await fixture('pricing-claude-us.html')
+  const parsed = parseOfficialPricing(source, `<nav>Pro plan ${'navigation '.repeat(300)}</nav>${page}`, '2026-08-31T10:00:00.000Z')
+
+  assert.equal(parsed.observations.length, 1)
+  assert.equal(parsed.observations[0].vendor, 'Anthropic')
+  assert.equal(parsed.observations[0].product, 'Claude')
+  assert.equal(parsed.observations[0].plan, 'Pro')
+  assert.equal(parsed.observations[0].amountMinor, 2_000)
 })

@@ -1,5 +1,42 @@
-import { isAllowedOfficialSourceUrl } from './official-source-catalog.mjs'
+import { isAllowedOfficialSourceUrl, resolveOfficialSource } from './official-source-catalog.mjs'
 import { amountToMinorUnits, normalizePriceObservation } from './price-snapshots.mjs'
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const MAX_RESPONSE_BYTES = 2_000_000
+
+export async function collectOfficialSource(configuredSource, { since, observedAt = new Date().toISOString(), fetchImpl = globalThis.fetch } = {}) {
+  const source = resolveOfficialSource(configuredSource)
+  if (typeof fetchImpl !== 'function') throw new Error('Official source fetch is unavailable')
+  let url = source.url
+  for (let redirectCount = 0; redirectCount <= 4; redirectCount++) {
+    let response
+    try {
+      response = await fetchImpl(url, {
+        redirect: 'manual',
+        headers: { Accept: 'application/atom+xml, application/rss+xml, application/feed+json, application/json, text/html;q=0.9' },
+        signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(15_000) : undefined,
+      })
+    } catch {
+      throw new Error('Official source request failed')
+    }
+    if (REDIRECT_STATUSES.has(response.status)) {
+      if (redirectCount === 4) throw new Error('Official source exceeded the redirect limit')
+      const location = response.headers.get('location')
+      let redirected
+      try { redirected = new URL(location || '', url).href } catch { throw new Error('Official source redirect was invalid') }
+      if (!location || !isAllowedOfficialSourceUrl(source, redirected)) throw new Error('Official source redirect was not allowlisted')
+      url = redirected
+      continue
+    }
+    if (!response.ok) throw new Error(`Official source request failed with HTTP ${response.status}`)
+    const declaredSize = Number(response.headers.get('content-length') || 0)
+    if (Number.isFinite(declaredSize) && declaredSize > MAX_RESPONSE_BYTES) throw new Error('Official source response exceeded the size limit')
+    const body = await response.text()
+    if (new TextEncoder().encode(body).byteLength > MAX_RESPONSE_BYTES) throw new Error('Official source response exceeded the size limit')
+    return { source, ...parseOfficialSource(source, body, since, observedAt) }
+  }
+  throw new Error('Official source collection failed')
+}
 
 export function parseOfficialFeed(source, body, since) {
   if (source?.parserKey !== 'feed' || source?.kind !== 'OfficialFeed') throw new Error('Official source is not a feed')
@@ -10,7 +47,9 @@ export function parseOfficialFeed(source, body, since) {
 }
 
 export function parseOfficialPage(source, body, since) {
-  if (source?.kind !== 'OfficialPage' || source?.parserKey !== 'json-ld-article') throw new Error('Unsupported official page parser')
+  if (source?.kind !== 'OfficialPage') throw new Error('Unsupported official page parser')
+  if (source.parserKey === 'lmstudio-changelog') return parseLmStudioChangelog(source, body, since)
+  if (source.parserKey !== 'json-ld-article') throw new Error('Unsupported official page parser')
   const articles = []
   const pattern = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
   for (const match of String(body || '').matchAll(pattern)) {
@@ -35,7 +74,7 @@ export function parseOfficialPage(source, body, since) {
 }
 
 export function parseOfficialPricing(source, body, observedAt = new Date().toISOString()) {
-  if (source?.kind !== 'OfficialPricing' || source?.parserKey !== 'openai-subscription-pricing' || !source?.pricing) throw new Error('Unsupported official pricing parser')
+  if (source?.kind !== 'OfficialPricing' || source?.parserKey !== 'subscription-pricing' || !source?.pricing) throw new Error('Unsupported official pricing parser')
   const text = cleanMarkup(body)
   const observations = []
   const warnings = []
@@ -126,16 +165,45 @@ function normalizeFeedItems(source, items, since) {
   })
 }
 
+function parseLmStudioChangelog(source, body, since) {
+  const text = cleanMarkup(body)
+  const releases = [...text.matchAll(/\bLM Studio (\d+\.\d+\.\d+)\b/g)]
+  if (!releases.length) throw new Error('LM Studio changelog parser found no releases')
+  const items = releases.flatMap((match, index) => {
+    const start = (match.index || 0) + match[0].length
+    const end = releases[index + 1]?.index || text.length
+    const block = text.slice(start, end)
+    const date = block.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}\b/)
+    if (!date) return []
+    const summary = block.slice(0, date.index).trim().replace(/^(?:Build\s+\d+\s*)+/i, '').trim()
+    return [{
+      id: `lm-studio-${match[1]}`,
+      title: `LM Studio ${match[1]}`,
+      summary,
+      url: source.url,
+      publishedAt: `${date[0]} 00:00:00 UTC`,
+    }]
+  })
+  if (!items.length) throw new Error('LM Studio changelog parser found no dated releases')
+  return normalizeFeedItems(source, items, since)
+}
+
 function findPlanAmount(text, aliases, currency, billingPeriod) {
-  const periods = billingPeriod === 'month' ? '(?:\/\s*(?:month|mo|월)|per\s+month|monthly)' : billingPeriod === 'year' ? '(?:\/\s*(?:year|yr|년)|per\s+year|annually)' : ''
+  const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:month|mo|월)|per\s+month|monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:year|yr|년)|per\s+year|annually)` : ''
   const amountPattern = String(currency).toUpperCase() === 'KRW'
     ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}`
     : `(?:US\\s*)?\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s*${periods}`
   for (const alias of aliases) {
-    const index = text.toLowerCase().indexOf(String(alias).toLowerCase())
-    if (index < 0) continue
-    const match = text.slice(index, index + 2_000).match(new RegExp(amountPattern, 'i'))
-    if (match) return match.slice(1).find(Boolean) || null
+    const haystack = text.toLowerCase()
+    const needle = String(alias).toLowerCase()
+    let offset = 0
+    while (needle && offset < haystack.length) {
+      const index = haystack.indexOf(needle, offset)
+      if (index < 0) break
+      const match = text.slice(index, index + 2_000).match(new RegExp(amountPattern, 'i'))
+      if (match) return match.slice(1).find(Boolean) || null
+      offset = index + needle.length
+    }
   }
   return null
 }

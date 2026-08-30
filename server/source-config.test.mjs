@@ -13,3 +13,14 @@ test('rejects blank or non-string identity metadata at the API boundary', () => 
     publisherId: 'Vendor', trustTier: 'primary',
   })
 })
+
+test('official source config keeps only a verified catalog id', () => {
+  assert.deepEqual(safeSourceConfig({ catalogId: 'openai-news', url: 'http://127.0.0.1/private', headers: { cookie: 'secret' } }, 'OfficialFeed'), {
+    catalogId: 'openai-news',
+  })
+})
+
+test('official source config rejects unknown ids and catalog kind mismatches', () => {
+  assert.throws(() => safeSourceConfig({ catalogId: 'not-in-catalog' }, 'OfficialFeed'), /unknown official source/i)
+  assert.throws(() => safeSourceConfig({ catalogId: 'openai-news' }, 'OfficialPricing'), /kind does not match/i)
+})

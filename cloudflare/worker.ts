@@ -1,4 +1,7 @@
 import { annotateMessage, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { getOfficialSource, OFFICIAL_SOURCE_KINDS } from '../shared/official-source-catalog.mjs'
+import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
+import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
 
 interface Env {
   REPORTS: KVNamespace
@@ -11,6 +14,7 @@ interface Env {
   REPORT_IMPORT_TOKEN?: string
   AI_SOURCES?: string
   TELEGRAM_SOURCES?: string
+  OFFICIAL_SOURCES?: string
 }
 
 type Message = { source: string; sourceId: string; externalId?: string; sourceKey?: string; publisherId?: string; independenceKey?: string; trustTier?: string; canonicalUrl?: string; contentHash?: string; text: string; url: string; publishedAt: string; engagement: number }
@@ -50,39 +54,57 @@ async function runFallbackCrawl(env: Env) {
 }
 
 async function crawl(env: Env, useOpenAI = true) {
-  const statuses: Array<{ source: string; ok: boolean; count: number; error?: string }> = []
+  const previous = await readLatestReport(env)
+  const statuses: Array<{ sourceId: string; source: string; kind: string; ok: boolean; status: 'ok' | 'partial' | 'error'; count: number; checkedAt: string; warnings: string[]; error?: string }> = []
   const messages: Message[] = []
-  const sources = parseSources(env.AI_SOURCES, env.TELEGRAM_SOURCES)
+  const observations: any[] = []
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const sources = parseSources(env.AI_SOURCES, env.TELEGRAM_SOURCES, env.OFFICIAL_SOURCES)
   for (const configuredSource of sources) {
     const source = normalizeSourceDefinition(configuredSource)
     try {
-      const fetched = (await fetchSource(source, env)).map((item) => annotateMessage(item, source))
-      const last24Hours = fetched.filter((message) => Date.parse(message.publishedAt) >= Date.now() - 24 * 60 * 60 * 1000)
+      const fetched = await fetchSource(source, env, since)
+      const result = Array.isArray(fetched) ? { messages: fetched, observations: [], warnings: [] } : fetched
+      const sourceDefinition = normalizeSourceDefinition(result.source || source)
+      const normalizedMessages = (Array.isArray(result.messages) ? result.messages : []).map((item: any) => annotateMessage({ ...item, id: item.id || item.externalId, engagement: typeof item.engagement === 'number' ? item.engagement : 0 }, sourceDefinition))
+      const last24Hours = normalizedMessages.filter((message: Message) => Date.parse(message.publishedAt) >= Date.now() - 24 * 60 * 60 * 1000)
+      const prices = Array.isArray(result.observations) ? result.observations : []
+      const warnings = Array.isArray(result.warnings) ? result.warnings.map(sanitizeSourceMessage) : []
       messages.push(...last24Hours)
-      statuses.push({ source: source.name, ok: true, count: last24Hours.length })
+      observations.push(...prices)
+      statuses.push(workerSourceRun(source, { catalogSource: result.source, count: last24Hours.length + prices.length, warnings }))
     } catch (error) {
-      statuses.push({ source: source.name, ok: false, count: 0, error: error instanceof Error ? error.message : 'Unknown error' })
+      statuses.push(workerSourceRun(source, { error }))
     }
   }
   let topics = buildTopics(messages)
   if (useOpenAI && env.OPENAI_API_KEY && topics.length) {
-    try { topics = applyModelSummaries(topics, await summarizeWithOpenAI(topics, env)) } catch (error) { statuses.push({ source: 'OpenAI summarization', ok: false, count: 0, error: error instanceof Error ? error.message : 'Unknown error' }) }
+    try { topics = applyModelSummaries(topics, await summarizeWithOpenAI(topics, env)) } catch (error) { statuses.push(workerSourceRun({ id: 'openai-summarization', name: 'OpenAI summarization', kind: 'Summary' }, { error })) }
   }
-  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date()), generatedAt: new Date().toISOString(), topics, sourceRuns: statuses, summaryProvider: useOpenAI && env.OPENAI_API_KEY && !statuses.some((run) => run.source === 'OpenAI summarization' && !run.ok) ? 'openai' : 'deterministic' }
+  const priceSnapshots = mergePriceSnapshots(previous?.priceSnapshots || [], observations)
+  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date()), generatedAt: new Date().toISOString(), topics, sourceRuns: statuses, priceSnapshots, summaryProvider: useOpenAI && env.OPENAI_API_KEY && !statuses.some((run) => run.source === 'OpenAI summarization' && !run.ok) ? 'openai' : 'deterministic' }
   await env.REPORTS.put('latest', JSON.stringify(report), { expirationTtl: 60 * 60 * 24 * 90 })
   return report
 }
 
-function parseSources(raw?: string, telegramRaw?: string) {
-  try {
-    const parsed = raw ? JSON.parse(raw) : []
-    const telegram = telegramRaw ? JSON.parse(telegramRaw) : []
-    const all = [...(Array.isArray(parsed) ? parsed : []), ...(Array.isArray(telegram) ? telegram : [])]
-    return all.filter((source) => ['Telegram', 'Reddit', 'X', 'Threads'].includes(source.kind) && source.enabled !== false)
-  } catch { return [] }
+function parseSources(raw?: string, telegramRaw?: string, officialRaw?: string) {
+  const parsed = parseArray(raw)
+  const telegram = parseArray(telegramRaw)
+  const official = parseArray(officialRaw).flatMap((catalogId) => {
+    if (typeof catalogId !== 'string' || !catalogId.trim()) return []
+    try {
+      const source = getOfficialSource(catalogId)
+      return [{ id: source.id, kind: source.kind, name: source.name, section: 'ai', enabled: true, config: { catalogId: source.id } }]
+    } catch {
+      const id = catalogId.trim().toLowerCase()
+      return [{ id, kind: 'OfficialFeed', name: id, section: 'ai', enabled: true, config: { catalogId: id } }]
+    }
+  })
+  return [...parsed, ...telegram, ...official].filter((source) => ['Telegram', 'Reddit', 'X', 'Threads', ...OFFICIAL_SOURCE_KINDS].includes(source.kind) && source.enabled !== false)
 }
 
-async function fetchSource(source: any, env: Env): Promise<Message[]> {
+async function fetchSource(source: any, env: Env, since: string): Promise<any> {
+  if (OFFICIAL_SOURCE_KINDS.includes(source.kind)) return collectOfficialSource(source, { since })
   if (source.kind === 'Telegram') {
     try { return await fetchTelegramPublicChannel(source) } catch (publicError) {
       if (!env.TELEGRAM_BOT_TOKEN) throw publicError
@@ -106,6 +128,46 @@ async function fetchSource(source: any, env: Env): Promise<Message[]> {
   const params = new URLSearchParams({ fields: 'id,text,timestamp,permalink,username', access_token: env.THREADS_ACCESS_TOKEN, limit: '50' })
   const response = await request(`https://graph.threads.net/v1.0/${encodeURIComponent(source.config.userId)}/threads?${params}`)
   return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'Threads', sourceId: source.name, text: post.text, url: post.permalink, publishedAt: post.timestamp, engagement: 0 }))
+}
+
+async function readLatestReport(env: Env) {
+  try {
+    const value = await env.REPORTS.get<any>('latest', 'json')
+    if (typeof value === 'string') return JSON.parse(value)
+    return value && typeof value === 'object' ? value : null
+  } catch {
+    return null
+  }
+}
+
+function parseArray(value?: string) {
+  if (!value) return []
+  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+}
+
+function workerSourceRun(source: any, { catalogSource, count = 0, warnings = [], error }: { catalogSource?: any; count?: number; warnings?: string[]; error?: unknown } = {}) {
+  const failed = error !== undefined
+  return {
+    sourceId: String(source.id || source.sourceKey || source.name || 'unknown-source'),
+    source: String(catalogSource?.name || source.name || source.id || 'Unknown source'),
+    kind: String(source.kind || catalogSource?.kind || 'Unknown'),
+    ok: !failed,
+    status: failed ? 'error' as const : warnings.length ? 'partial' as const : 'ok' as const,
+    count: failed ? 0 : count,
+    checkedAt: new Date().toISOString(),
+    warnings: failed ? [] : warnings,
+    ...(failed ? { error: sanitizeSourceMessage(error) } : {}),
+  }
+}
+
+function sanitizeSourceMessage(value: unknown) {
+  const message = value instanceof Error ? value.message : String(value || 'Unknown error')
+  return message
+    .replace(/https?:\/\/[^\s)\]}]+/gi, '[redacted-url]')
+    .replace(/\b(bearer)\s+\S+/gi, '$1 [redacted]')
+    .replace(/\b(authorization|cookie|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi, '$1=[redacted]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 240)
 }
 
 async function fetchTelegramPublicChannel(source: any): Promise<Message[]> {

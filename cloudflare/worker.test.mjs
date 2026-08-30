@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import worker, { buildTopics, normalizeReport } from './worker.ts'
+import { normalizePriceObservation } from '../shared/price-snapshots.mjs'
 
 const post = (sourceId, text, hour, id) => ({
   source: 'Telegram', sourceId, text, engagement: 100, publishedAt: `2026-08-27T${String(hour).padStart(2, '0')}:00:00.000Z`, url: `https://t.me/${sourceId}/${id}`,
@@ -89,6 +91,70 @@ test('worker crawl propagates configured independence keys into corroborating ev
     const report = await response.json()
     assert.equal(report.topics.length, 1)
     assert.deepEqual(new Set(report.topics[0].evidence.map((item) => item.independenceKey)), new Set(['vendor-a', 'vendor-b']))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+const previousPrice = () => normalizePriceObservation({
+  vendor: 'OpenAI', product: 'ChatGPT', plan: 'Plus', region: 'US', currency: 'USD', amountMinor: 1_500,
+  billingPeriod: 'month', unit: 'user', taxMode: 'unknown', observedAt: '2026-08-30T10:00:00.000Z', lastVerifiedAt: '2026-08-30T10:00:00.000Z',
+  sourceUrl: 'https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus', sourceKey: 'openai-chatgpt-plus-usd', publisherId: 'openai', trustTier: 'primary',
+})
+
+test('worker collects allowlisted official sources and merges prices with latest KV history', async () => {
+  const pricing = await readFile(new URL('../server/fixtures/official/pricing-us.html', import.meta.url), 'utf8')
+  let latest = { date: '2026-08-30', topics: [], sourceRuns: [], priceSnapshots: [previousPrice()] }
+  const reports = {
+    get: async () => latest,
+    put: async (_key, value) => { latest = JSON.parse(value) },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const requested = String(url)
+    if (requested === 'https://openai.com/news/rss.xml') {
+      const published = new Date(Date.now() - 60 * 60 * 1000).toUTCString()
+      return new Response(`<?xml version="1.0"?><rss><channel><item><guid>official-now</guid><title>Official model update</title><description>New tools are available.</description><link>https://openai.com/index/official-model-update/</link><pubDate>${published}</pubDate></item></channel></rss>`)
+    }
+    if (requested.includes('6950777')) return new Response(pricing)
+    return new Response('cookie=do-not-leak response body', { status: 503, statusText: 'TOKEN secret' })
+  }
+  try {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+      REPORTS: reports,
+      OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'openai-chatgpt-plus-usd', 'ollama-releases']),
+    })
+    const report = await response.json()
+
+    assert.deepEqual(report.priceSnapshots.map((item) => item.amountMinor), [2_000, 1_500])
+    assert.deepEqual(latest.priceSnapshots.map((item) => item.amountMinor), [2_000, 1_500])
+    const feed = report.sourceRuns.find((run) => run.sourceId === 'openai-news')
+    assert.equal(feed.source, 'OpenAI News')
+    assert.equal(feed.status, 'ok')
+    assert.equal(feed.count, 1)
+    const failed = report.sourceRuns.find((run) => run.sourceId === 'ollama-releases')
+    assert.equal(failed.status, 'error')
+    assert.doesNotMatch(failed.error, /cookie|token|secret|response body|https?:/i)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('worker preserves inherited prices when the current official pricing source fails', async () => {
+  let latest = { date: '2026-08-30', topics: [], sourceRuns: [], priceSnapshots: [previousPrice()] }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('sensitive body', { status: 502, statusText: 'secret' })
+  try {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+      REPORTS: { get: async () => latest, put: async (_key, value) => { latest = JSON.parse(value) } },
+      OFFICIAL_SOURCES: JSON.stringify(['openai-chatgpt-plus-usd']),
+    })
+    const report = await response.json()
+
+    assert.equal(report.priceSnapshots.length, 1)
+    assert.equal(report.priceSnapshots[0].amountMinor, 1_500)
+    assert.equal(report.sourceRuns[0].status, 'error')
+    assert.equal(report.sourceRuns[0].sourceId, 'openai-chatgpt-plus-usd')
   } finally {
     globalThis.fetch = originalFetch
   }

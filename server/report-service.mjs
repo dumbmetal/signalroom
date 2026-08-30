@@ -1,6 +1,7 @@
 import { createAdapters } from './adapters.mjs'
 import { clusterMessages, corroboratedClusters, dedupeMessages, rankClusters, summarizeClusters } from './pipeline.mjs'
 import { annotateMessage, normalizeSourceDefinition } from '../shared/briefing-contract.mjs'
+import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
 
 export class ReportService {
   constructor(store, env = process.env) { this.store = store; this.env = env; this.adapters = createAdapters(env); this.inFlight = null }
@@ -16,11 +17,23 @@ export class ReportService {
     const since = localMidnightUtc(date, 'Europe/London')
     const grouped = { crypto: [], ai: [] }
     const sourceRuns = []
+    const observations = []
     for (const source of data.sources.filter((item) => item.enabled !== false)) {
       const adapter = this.adapters[source.kind]
-      if (!adapter) { sourceRuns.push({ sourceId: source.id, ok: false, count: 0, error: `No adapter for ${source.kind}` }); continue }
-      try { const normalizedSource = normalizeSourceDefinition(source); const messages = (await adapter.fetchSince(source, since)).map((message) => annotateMessage(message, normalizedSource)); grouped[source.section || (source.kind === 'Telegram' ? 'crypto' : 'ai')].push(...messages); sourceRuns.push({ sourceId: source.id, ok: true, count: messages.length }) }
-      catch (error) { sourceRuns.push({ sourceId: source.id, ok: false, count: 0, error: error.message }) }
+      if (!adapter) { sourceRuns.push(sourceRun(source, { error: `No adapter for ${source.kind}` })); continue }
+      try {
+        const fetched = await adapter.fetchSince(source, since)
+        const result = Array.isArray(fetched) ? { messages: fetched, observations: [], warnings: [] } : fetched
+        const normalizedSource = normalizeSourceDefinition(result.source || source)
+        const messages = (Array.isArray(result.messages) ? result.messages : []).map((message) => annotateMessage({ ...message, id: message.id || message.externalId }, normalizedSource))
+        const prices = Array.isArray(result.observations) ? result.observations : []
+        const warnings = Array.isArray(result.warnings) ? result.warnings.map(sanitizeSourceMessage) : []
+        grouped[source.section || (source.kind === 'Telegram' ? 'crypto' : 'ai')].push(...messages)
+        observations.push(...prices)
+        sourceRuns.push(sourceRun(source, { catalogSource: result.source, count: messages.length + prices.length, warnings }))
+      } catch (error) {
+        sourceRuns.push(sourceRun(source, { error }))
+      }
     }
     const provider = createSummaryProvider(this.env)
     const topics = []
@@ -29,7 +42,9 @@ export class ReportService {
       const clusters = rankClusters(corroboratedClusters(clusterMessages(messages)))
       topics.push(...await summarizeClusters(clusters, section, provider))
     }
-    const report = { date, generatedAt: new Date().toISOString(), topics, sourceRuns, delivery: { telegram: 'pending' } }
+    const previousPrices = existing?.priceSnapshots || data.reports.find((report) => report.date !== date && Array.isArray(report.priceSnapshots))?.priceSnapshots || []
+    const priceSnapshots = mergePriceSnapshots(previousPrices, observations)
+    const report = { date, generatedAt: new Date().toISOString(), topics, sourceRuns, priceSnapshots, delivery: { telegram: 'pending' } }
     await this.store.update((current) => { current.reports = current.reports.filter((item) => item.date !== date); current.reports.unshift(report); current.reports = current.reports.slice(0, 90); return current })
     if (data.settings.telegramEnabled) await this.deliver(report)
     return report
@@ -45,6 +60,31 @@ export class ReportService {
   }
   async #deliveryState(report, telegram, error) { report.delivery = { telegram, ...(error ? { error } : {}) }; await this.store.update((data) => { const index = data.reports.findIndex((item) => item.date === report.date); if (index >= 0) data.reports[index] = report; return data }); return report }
   sourceHealth(source) { const adapter = this.adapters[source.kind]; return adapter ? adapter.health(source) : { ok: false, message: `No adapter for ${source.kind}` } }
+}
+
+function sourceRun(source, { catalogSource, count = 0, warnings = [], error } = {}) {
+  const failed = error !== undefined
+  return {
+    sourceId: source.id,
+    source: catalogSource?.name || source.name || source.id,
+    kind: source.kind,
+    ok: !failed,
+    status: failed ? 'error' : warnings.length ? 'partial' : 'ok',
+    count: failed ? 0 : count,
+    checkedAt: new Date().toISOString(),
+    warnings: failed ? [] : warnings,
+    ...(failed ? { error: sanitizeSourceMessage(error) } : {}),
+  }
+}
+
+function sanitizeSourceMessage(value) {
+  const message = value instanceof Error ? value.message : String(value || 'Unknown error')
+  return message
+    .replace(/https?:\/\/[^\s)\]}]+/gi, '[redacted-url]')
+    .replace(/\b(bearer)\s+\S+/gi, '$1 [redacted]')
+    .replace(/\b(authorization|cookie|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi, '$1=[redacted]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 240)
 }
 
 function createSummaryProvider(env) {
