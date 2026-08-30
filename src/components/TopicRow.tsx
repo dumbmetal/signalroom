@@ -65,9 +65,9 @@ export function TopicRow({ topic, open, onToggle, priceSnapshots }: TopicRowProp
           </div>
           {price.kind === 'change' && price.previous
             ? <div className="price-values">
-                <span><small>Before</small><del>{formatPrice(price.previous)}</del></span>
+                <span><small>Before</small><del>{formatPrice(price.previous)}</del>{price.previous.promotion && <em className="offer-label">{price.previous.promotion.label}</em>}</span>
                 <ArrowRight size={15} aria-hidden="true" />
-                <span><small>Now</small><strong>{formatPrice(price.current)}</strong></span>
+                <span><small>Now</small><strong>{formatPrice(price.current)}</strong>{price.current.promotion && <em className="offer-label">{price.current.promotion.label}</em>}</span>
                 {price.percentChange !== undefined && <span className="price-delta">{price.percentChange > 0 ? '+' : ''}{price.percentChange}%</span>}
               </div>
             : <div className="price-values first-price"><span><small>First observed</small><strong>{formatPrice(price.current)}</strong></span></div>}

@@ -68,14 +68,25 @@ export function normalizeLiveReport(input: unknown): BriefingReport | null {
   if (new Set(topics.map((topic) => topic.id)).size !== topics.length) return null
 
   if (input.priceSnapshots !== undefined && !Array.isArray(input.priceSnapshots)) return null
-  const priceSnapshots = Array.isArray(input.priceSnapshots)
-    ? input.priceSnapshots.map(normalizePriceObservation).filter((item): item is PriceObservation => item !== null)
-    : []
+  const priceSnapshots: PriceObservation[] = []
+  if (Array.isArray(input.priceSnapshots)) {
+    for (const item of input.priceSnapshots) {
+      const normalized = normalizePriceObservation(item)
+      if (!normalized) return null
+      priceSnapshots.push(normalized)
+    }
+  }
 
   if (input.sourceRuns !== undefined && input.sourceRuns !== null && !Array.isArray(input.sourceRuns)) return null
-  const sourceRuns = Array.isArray(input.sourceRuns)
-    ? input.sourceRuns.map(normalizeSourceRun).filter((item): item is SourceRun => item !== null)
-    : null
+  let sourceRuns: SourceRun[] | null = null
+  if (Array.isArray(input.sourceRuns)) {
+    sourceRuns = []
+    for (const item of input.sourceRuns) {
+      const normalized = normalizeSourceRun(item)
+      if (!normalized) return null
+      sourceRuns.push(normalized)
+    }
+  }
 
   return { date, generatedAt, topics, priceSnapshots, sourceRuns }
 }
@@ -102,12 +113,15 @@ export function priceChangeView(topic: Topic, observations: PriceObservation[]):
       .sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt) || Date.parse(right.lastVerifiedAt) - Date.parse(left.lastVerifiedAt))
     const current = ordered[0]
     if (!current) continue
-    const previous = ordered.find((candidate) => compatiblePriceDimensions(current, candidate) && candidate.amountMinor !== current.amountMinor)
+    const currentSignature = priceObservationSignature(current)
+    const previous = ordered.find((candidate) => compatiblePriceDimensions(current, candidate) && priceObservationSignature(candidate) !== currentSignature)
     if (!previous) {
       changes.push({ key, kind: 'first-observed', current })
       continue
     }
-    const percentChange = previous.amountMinor === 0 ? undefined : Math.round(((current.amountMinor - previous.amountMinor) / previous.amountMinor) * 1000) / 10
+    const percentChange = previous.amountMinor === 0 || previous.amountMinor === current.amountMinor
+      ? undefined
+      : Math.round(((current.amountMinor - previous.amountMinor) / previous.amountMinor) * 1000) / 10
     changes.push({ key, kind: 'change', current, previous, ...(percentChange === undefined ? {} : { percentChange }) })
   }
   return changes
@@ -310,11 +324,22 @@ function compatiblePriceDimensions(left: PriceObservation, right: PriceObservati
     && left.taxMode === right.taxMode
 }
 
+function priceObservationSignature(observation: PriceObservation) {
+  const promotion = observation.promotion
+  return JSON.stringify([
+    observation.amountMinor,
+    promotion?.kind ?? null,
+    promotion?.label ?? null,
+    promotion?.originalAmountMinor ?? null,
+    promotion?.endsAt ?? null,
+  ])
+}
+
 function safeSourceCopy(value: unknown, fallback: string): string | undefined {
   if (typeof value !== 'string') return value === undefined ? undefined : fallback
   const text = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
   if (!text) return undefined
-  if (/^[<{[]/.test(text) || /(?:response\s*body|authorization|bearer\s+|api[-_ ]?key|token\s*[=:])/i.test(text)) return fallback
+  if (/^[<{[]/.test(text) || /(?:response\s*body|authorization|bearer\s+|set-cookie|cookie\s*:|password\s*[=:]|(?:client[_ -]?)?secret\s*[=:]|session(?:id)?\s*[=:]|api[-_ ]?key|token\s*[=:]|private[-_ ]?key\s*[=:])/i.test(text)) return fallback
   const withoutUrls = text.replace(/https?:\/\/\S+/gi, '[link removed]')
   return withoutUrls.slice(0, 160)
 }

@@ -182,6 +182,21 @@ test('normalizes a source warning supplied as one string', () => {
   assert.deepEqual(normalized?.sourceRuns?.[0].warnings, ['Parser found no prices'])
 })
 
+test('redacts cookie, password, and secret material from source errors', () => {
+  const normalized = normalizeLiveReport(report({ sourceRuns: [{
+    source: 'private-source',
+    status: 'error',
+    count: 0,
+    error: 'Set-Cookie: session=fake-sensitive-value; password=fake-password; client_secret=fake-secret',
+  }] }))
+  assert.equal(normalized?.sourceRuns?.[0].error, 'Source check failed.')
+})
+
+test('rejects reports containing malformed price or source-run entries', () => {
+  assert.equal(normalizeLiveReport(report({ priceSnapshots: [{ key: 'incomplete-price' }] })), null)
+  assert.equal(normalizeLiveReport(report({ sourceRuns: [{ source: 'missing-status' }] })), null)
+})
+
 test('does not interpret missing sourceRuns as zero live sources', () => {
   const input: Record<string, unknown> = report()
   delete input.sourceRuns
@@ -264,6 +279,24 @@ test('deduplicates repeated same-value observations before finding the prior pri
   const [change] = priceChangeView(normalized.topics[0], normalized.priceSnapshots)
   assert.equal(change.current.observedAt, '2026-08-31T00:00:00.000Z')
   assert.equal(change.previous?.amountMinor, 1800)
+})
+
+test('keeps a compatible promotion-only change while deduplicating identical offers', () => {
+  const key = 'openai:chatgpt:plus:US:USD:month:seat'
+  const normalized = normalizeLiveReport(report({
+    topics: [topic({ contentType: 'discount_offer', priceKeys: [key] })],
+    priceSnapshots: [
+      price({ promotion: { kind: 'trial', label: 'One month free', endsAt: '2026-09-30T00:00:00.000Z' } }),
+      price({ observedAt: '2026-08-30T00:00:00.000Z', contentHash: 'same-offer', promotion: { kind: 'trial', label: 'One month free', endsAt: '2026-09-30T00:00:00.000Z' } }),
+      price({ observedAt: '2026-08-20T00:00:00.000Z', contentHash: 'before-offer' }),
+    ],
+  }))
+  assert.ok(normalized)
+
+  const [change] = priceChangeView(normalized.topics[0], normalized.priceSnapshots)
+  assert.equal(change.kind, 'change')
+  assert.equal(change.previous?.promotion, undefined)
+  assert.equal(change.percentChange, undefined)
 })
 
 test('labels a single valid observation as first observed', () => {

@@ -41,8 +41,8 @@ function App() {
     return () => { active = false }
   }, [])
   const reportTopics = report?.topics ?? []
-  const leadTopic = reportTopics[0]
   const filteredTopics = useMemo(() => reportTopics.filter((topic) => (section === 'all' || topic.section === section) && `${topic.title} ${topic.summary} ${topic.sources.join(' ')}`.toLowerCase().includes(query.toLowerCase())), [query, reportTopics, section])
+  const leadTopic = filteredTopics[0]
   const crawlStatus = reportMode === 'loading'
     ? 'Loading live report…'
     : reportMode === 'unavailable'
@@ -76,7 +76,7 @@ function App() {
         ? <section className="lead-story loading-report" aria-live="polite"><div className="lead-kicker"><span>LIVE REPORT</span></div><div className="lead-grid"><h2>Gathering today’s<br /><span>verified signals.</span></h2><div><p>The briefing remains quiet until the current report has been validated.</p></div></div></section>
         : leadTopic
           ? <section className="lead-story" aria-labelledby="lead-story-heading"><div className="lead-kicker"><span className={`section-chip ${leadTopic.section}`}>{leadTopic.section.toUpperCase()}</span><span>TOP SIGNAL / 01</span></div><div className="lead-grid"><h2 id="lead-story-heading">{leadTopic.title}</h2><div><p>{leadTopic.summary}</p><a className="text-link" href={`#${topicDisclosureIds(leadTopic.id).buttonId}`}>Read the signal <ArrowUpRight size={16} aria-hidden="true" /></a></div></div><div className="lead-footer"><span>{leadTopic.signal}</span><span>{leadTopic.independentSourceCount === undefined ? `Across ${leadTopic.sources.length} listed sources` : `Across ${leadTopic.independentSourceCount} independent sources`}</span><span>{leadTopic.confidence}</span></div></section>
-          : <section className="lead-story"><div className="lead-kicker"><span>{reportMode === 'unavailable' ? 'OFFLINE' : 'LIVE REPORT'}</span></div><div className="lead-grid"><h2>{reportMode === 'unavailable' ? <>No report is<br /><span>available yet.</span></> : <>No cross-channel topics<br /><span>in the last 24 hours.</span></>}</h2><div><p>{reportMode === 'unavailable' ? 'The live request failed and there is no valid saved report on this device.' : 'A topic appears only when its evidence meets the report’s source and trust requirements.'}</p></div></div></section>}
+          : <section className="lead-story"><div className="lead-kicker"><span>{reportMode === 'unavailable' ? 'OFFLINE' : 'LIVE REPORT'}</span></div><div className="lead-grid"><h2>{reportMode === 'unavailable' ? <>No report is<br /><span>available yet.</span></> : reportTopics.length > 0 ? <>No signals match<br /><span>this view.</span></> : <>No cross-channel topics<br /><span>in the last 24 hours.</span></>}</h2><div><p>{reportMode === 'unavailable' ? 'The live request failed and there is no valid saved report on this device.' : reportTopics.length > 0 ? 'Try another section or search term to return to the full briefing.' : 'A topic appears only when its evidence meets the report’s source and trust requirements.'}</p></div></div></section>}
 
       <div className="content-grid">
         <div className="topics-column">
