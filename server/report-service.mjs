@@ -1,5 +1,6 @@
 import { createAdapters } from './adapters.mjs'
 import { clusterMessages, corroboratedClusters, dedupeMessages, rankClusters, summarizeClusters } from './pipeline.mjs'
+import { annotateMessage, normalizeSourceDefinition } from '../shared/briefing-contract.mjs'
 
 export class ReportService {
   constructor(store, env = process.env) { this.store = store; this.env = env; this.adapters = createAdapters(env); this.inFlight = null }
@@ -18,7 +19,7 @@ export class ReportService {
     for (const source of data.sources.filter((item) => item.enabled !== false)) {
       const adapter = this.adapters[source.kind]
       if (!adapter) { sourceRuns.push({ sourceId: source.id, ok: false, count: 0, error: `No adapter for ${source.kind}` }); continue }
-      try { const messages = await adapter.fetchSince(source, since); grouped[source.section || (source.kind === 'Telegram' ? 'crypto' : 'ai')].push(...messages); sourceRuns.push({ sourceId: source.id, ok: true, count: messages.length }) }
+      try { const normalizedSource = normalizeSourceDefinition(source); const messages = (await adapter.fetchSince(source, since)).map((message) => annotateMessage(message, normalizedSource)); grouped[source.section || (source.kind === 'Telegram' ? 'crypto' : 'ai')].push(...messages); sourceRuns.push({ sourceId: source.id, ok: true, count: messages.length }) }
       catch (error) { sourceRuns.push({ sourceId: source.id, ok: false, count: 0, error: error.message }) }
     }
     const provider = createSummaryProvider(this.env)

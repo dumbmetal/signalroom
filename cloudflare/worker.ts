@@ -1,3 +1,5 @@
+import { annotateMessage, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+
 interface Env {
   REPORTS: KVNamespace
   X_BEARER_TOKEN?: string
@@ -11,8 +13,8 @@ interface Env {
   TELEGRAM_SOURCES?: string
 }
 
-type Message = { source: string; sourceId: string; text: string; url: string; publishedAt: string; engagement: number }
-type TopicCluster = { terms: Set<string>; posts: Message[]; postTerms: Array<{ sourceId: string; terms: string[] }> }
+type Message = { source: string; sourceId: string; externalId?: string; sourceKey?: string; publisherId?: string; independenceKey?: string; trustTier?: string; canonicalUrl?: string; contentHash?: string; text: string; url: string; publishedAt: string; engagement: number }
+type TopicCluster = { terms: Set<string>; posts: Message[]; postTerms: Array<{ sourceId: string; independenceKey: string; terms: string[] }> }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -51,9 +53,10 @@ async function crawl(env: Env, useOpenAI = true) {
   const statuses: Array<{ source: string; ok: boolean; count: number; error?: string }> = []
   const messages: Message[] = []
   const sources = parseSources(env.AI_SOURCES, env.TELEGRAM_SOURCES)
-  for (const source of sources) {
+  for (const configuredSource of sources) {
+    const source = normalizeSourceDefinition(configuredSource)
     try {
-      const fetched = await fetchSource(source, env)
+      const fetched = (await fetchSource(source, env)).map((item) => annotateMessage(item, source))
       const last24Hours = fetched.filter((message) => Date.parse(message.publishedAt) >= Date.now() - 24 * 60 * 60 * 1000)
       messages.push(...last24Hours)
       statuses.push({ source: source.name, ok: true, count: last24Hours.length })
@@ -86,23 +89,23 @@ async function fetchSource(source: any, env: Env): Promise<Message[]> {
     }
     const response = await request(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates?limit=100&timeout=0`)
     const chatId = String(source.config?.chatId || source.detail || '')
-    return (response.result || []).map((update: any) => update.channel_post || update.message).filter(Boolean).filter((post: any) => String(post.chat?.id) === chatId || `@${post.chat?.username || ''}`.toLowerCase() === chatId.toLowerCase()).map((post: any) => ({ source: 'Telegram', sourceId: source.name, text: post.text || post.caption || '', url: post.chat?.username ? `https://t.me/${post.chat.username}/${post.message_id}` : '', publishedAt: new Date(post.date * 1000).toISOString(), engagement: 0 })).filter((post: Message) => post.text)
+    return (response.result || []).map((update: any) => update.channel_post || update.message).filter(Boolean).filter((post: any) => String(post.chat?.id) === chatId || `@${post.chat?.username || ''}`.toLowerCase() === chatId.toLowerCase()).map((post: any) => ({ externalId: String(post.message_id), source: 'Telegram', sourceId: source.name, text: post.text || post.caption || '', url: post.chat?.username ? `https://t.me/${post.chat.username}/${post.message_id}` : '', publishedAt: new Date(post.date * 1000).toISOString(), engagement: 0 })).filter((post: Message) => post.text)
   }
   if (source.kind === 'Reddit') {
     const subreddit = source.config?.subreddit || source.name
     const response = await request(`https://www.reddit.com/r/${encodeURIComponent(subreddit)}/hot.json?limit=50`, { headers: { 'User-Agent': 'signalroom-cloudflare/1.0' } })
-    return (response.data?.children || []).map(({ data }: any) => ({ source: 'Reddit', sourceId: `r/${subreddit}`, text: `${data.title}. ${data.selftext || ''}`, url: `https://reddit.com${data.permalink}`, publishedAt: new Date(data.created_utc * 1000).toISOString(), engagement: data.score || 0 }))
+    return (response.data?.children || []).map(({ data }: any) => ({ externalId: data.name, source: 'Reddit', sourceId: `r/${subreddit}`, text: `${data.title}. ${data.selftext || ''}`, url: `https://reddit.com${data.permalink}`, publishedAt: new Date(data.created_utc * 1000).toISOString(), engagement: data.score || 0 }))
   }
   if (source.kind === 'X') {
     if (!env.X_BEARER_TOKEN) throw new Error('X_BEARER_TOKEN missing')
     const params = new URLSearchParams({ query: source.config?.query || source.detail, max_results: '50', 'tweet.fields': 'created_at,public_metrics' })
     const response = await request(`https://api.x.com/2/tweets/search/recent?${params}`, { headers: { Authorization: `Bearer ${env.X_BEARER_TOKEN}` } })
-    return (response.data || []).map((post: any) => ({ source: 'X', sourceId: source.name, text: post.text, url: `https://x.com/i/status/${post.id}`, publishedAt: post.created_at, engagement: post.public_metrics?.like_count || 0 }))
+    return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'X', sourceId: source.name, text: post.text, url: `https://x.com/i/status/${post.id}`, publishedAt: post.created_at, engagement: post.public_metrics?.like_count || 0 }))
   }
   if (!env.THREADS_ACCESS_TOKEN || !source.config?.userId) throw new Error('Threads access token or userId missing')
   const params = new URLSearchParams({ fields: 'id,text,timestamp,permalink,username', access_token: env.THREADS_ACCESS_TOKEN, limit: '50' })
   const response = await request(`https://graph.threads.net/v1.0/${encodeURIComponent(source.config.userId)}/threads?${params}`)
-  return (response.data || []).map((post: any) => ({ source: 'Threads', sourceId: source.name, text: post.text, url: post.permalink, publishedAt: post.timestamp, engagement: 0 }))
+  return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'Threads', sourceId: source.name, text: post.text, url: post.permalink, publishedAt: post.timestamp, engagement: 0 }))
 }
 
 async function fetchTelegramPublicChannel(source: any): Promise<Message[]> {
@@ -124,7 +127,7 @@ async function fetchTelegramPublicChannel(source: any): Promise<Message[]> {
     const text = decodeTelegramHtml(textMatch[1])
     if (!text) continue
     const viewMatch = block.match(/tgme_widget_message_views">([\d.,KMB]+)/)
-    posts.push({ source: 'Telegram', sourceId: source.name, text, url: `https://t.me/${channel}/${messageId}`, publishedAt: dateMatch[1], engagement: parseTelegramViews(viewMatch?.[1]) })
+    posts.push({ externalId: messageId, source: 'Telegram', sourceId: source.name, text, url: `https://t.me/${channel}/${messageId}`, publishedAt: dateMatch[1], engagement: parseTelegramViews(viewMatch?.[1]) })
   }
   return posts
 }
@@ -152,7 +155,7 @@ export function buildTopics(messages: Message[]) {
         const overlap = terms.filter((term) => candidate.terms.includes(term))
         const distinctiveOverlap = overlap.filter(isDistinctiveTerm)
         const koreanOverlap = overlap.filter((term) => /[가-힣]/u.test(term))
-        const crossSource = candidate.sourceId !== post.sourceId
+        const crossSource = candidate.independenceKey !== independentKey(post)
         const score = overlap.length / Math.max(1, Math.min(terms.length, candidate.terms.length))
         const enoughSharedTerms = distinctiveOverlap.length >= 1 || koreanOverlap.length >= 2
         if (crossSource && !enoughSharedTerms) continue
@@ -162,16 +165,16 @@ export function buildTopics(messages: Message[]) {
     }
     if (best && bestScore >= 0.34) {
       best.posts.push(post)
-      best.postTerms.push({ sourceId: post.sourceId, terms })
+      best.postTerms.push({ sourceId: post.sourceId, independenceKey: independentKey(post), terms })
       terms.forEach((term) => best?.terms.add(term))
-    } else clusters.push({ terms: new Set(terms), posts: [post], postTerms: [{ sourceId: post.sourceId, terms }] })
+    } else clusters.push({ terms: new Set(terms), posts: [post], postTerms: [{ sourceId: post.sourceId, independenceKey: independentKey(post), terms }] })
   }
 
-  return clusters.filter((cluster) => new Set(cluster.posts.map((post) => post.sourceId)).size >= 2).map((cluster) => {
+  return clusters.filter((cluster) => new Set(cluster.posts.map(independentKey)).size >= 2).map((cluster) => {
     const sources = [...new Set(cluster.posts.map((post) => post.sourceId))]
     const engagement = cluster.posts.reduce((sum, post) => sum + post.engagement, 0)
     const newest = Math.max(...cluster.posts.map((post) => Date.parse(post.publishedAt)))
-    const sourceCount = sources.length
+    const sourceCount = new Set(cluster.posts.map(independentKey)).size
     const score = sourceCount * 10_000 + cluster.posts.length * 100 + Math.log10(engagement + 1) * 10 + newest / 1e13
     const term = strongestTerm(cluster)
     const section = cluster.posts.every((post) => post.source === 'Telegram') ? 'crypto' : 'ai'
@@ -179,9 +182,9 @@ export function buildTopics(messages: Message[]) {
       id: `${section}-${slug(term)}-${newest}`,
       rank: 0,
       section,
-      title: `${term.toUpperCase()} · ${sourceCount}개 채널 동시 언급`,
+      title: `${term.toUpperCase()} · ${sourceCount}개 독립 출처 동시 언급`,
       summary: cluster.posts.slice(0, 3).map((post) => post.text).join(' ').slice(0, 500),
-      signal: `${cluster.posts.length} posts across ${sourceCount} source${sourceCount === 1 ? '' : 's'}`,
+      signal: `${cluster.posts.length} posts across ${sourceCount} independent source${sourceCount === 1 ? '' : 's'}`,
       sources,
       confidence: sourceCount >= 3 ? 'High confidence' : 'Mixed signal',
       evidence: selectEvidence(cluster.posts),
@@ -212,23 +215,13 @@ function strongestTerm(cluster: { terms: Set<string>; posts: Message[] }) {
   return strongest.replace(/^asset:/, '')
 }
 function selectEvidence(posts: Message[], limit = 6) {
-  const selected: Message[] = []
-  const selectedUrls = new Set<string>()
-  for (const sourceId of [...new Set(posts.map((post) => post.sourceId))]) {
-    const post = posts.find((item) => item.sourceId === sourceId)
-    if (post) { selected.push(post); selectedUrls.add(post.url) }
-  }
-  for (const post of posts) {
-    if (selected.length >= limit) break
-    if (!selectedUrls.has(post.url)) { selected.push(post); selectedUrls.add(post.url) }
-  }
-  return selected.slice(0, limit).map((post) => ({ source: post.source, label: post.sourceId, author: post.sourceId, excerpt: post.text.slice(0, 500), time: relativeTime(post.publishedAt), url: post.url }))
+  return selectCorroboratingEvidence(posts, limit).map((post: Message) => ({ source: post.source, label: post.sourceId, author: post.sourceId, excerpt: post.text.slice(0, 500), time: relativeTime(post.publishedAt), url: post.url, sourceKey: post.sourceKey, publisherId: post.publisherId, independenceKey: independentKey(post), trustTier: post.trustTier }))
 }
 function dedupeWithinSources(messages: Message[]) {
   const seen = new Set<string>()
   return messages.filter((message) => {
     const normalized = message.text.toLowerCase().replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim()
-    const key = `${message.sourceId}:${normalized}`
+    const key = `${message.sourceKey || `${message.source}:${message.sourceId}`}:${message.contentHash || normalized}`
     if (!normalized || seen.has(key)) return false
     seen.add(key)
     return true
@@ -243,7 +236,7 @@ function relativeTime(value: string) {
 function slug(value: string) { return value.toLowerCase().replace(/[^a-z0-9가-힣]+/gu, '-').replace(/^-|-$/g, '').slice(0, 40) || 'topic' }
 
 export function normalizeReport(report: any) {
-  const topics = (Array.isArray(report?.topics) ? report.topics : []).map(normalizeTopic).filter((topic: any) => topic.sources.length >= 2).map((topic: any, index: number) => ({ ...topic, rank: index + 1 }))
+  const topics = (Array.isArray(report?.topics) ? report.topics : []).map(normalizeTopic).filter((topic: any) => topic.independentSourceCount >= 2).map((topic: any, index: number) => ({ ...topic, rank: index + 1 }))
   return { ...report, topics, sourceRuns: Array.isArray(report?.sourceRuns) ? report.sourceRuns : [] }
 }
 
@@ -254,11 +247,14 @@ function normalizeTopic(topic: any, index = 0) {
     author: item.author || item.sourceId || 'Unknown author',
     excerpt: item.excerpt || item.text || '',
     time: item.time || relativeTime(item.publishedAt || new Date().toISOString()),
-    url: item.url || '',
+    url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: item.trustTier || 'community',
   })).filter((item: any) => item.excerpt || item.url) : []
   const sources = [...new Set(evidence.map((item: any) => item.label).filter((label: string) => label && label !== 'Unknown source'))]
-  return { ...topic, id: topic?.id || `topic-${index + 1}`, rank: Number(topic?.rank || index + 1), sources, evidence }
+  const independentSourceCount = new Set(evidence.map((item: any) => item.independenceKey).filter(Boolean)).size
+  return { ...topic, id: topic?.id || `topic-${index + 1}`, rank: Number(topic?.rank || index + 1), sources, independentSourceCount, evidence }
 }
+
+function independentKey(post: Pick<Message, 'source' | 'sourceId' | 'sourceKey' | 'publisherId' | 'independenceKey'>) { return independenceKeyFor(post) }
 
 function applyModelSummaries(topics: any[], modelTopics: any[]) {
   const summaries = new Map(modelTopics.filter((topic: any) => topic && typeof topic.id === 'string').map((topic: any) => [topic.id, topic]))
