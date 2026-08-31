@@ -135,6 +135,22 @@ test('OpenAI pricing fails closed when Plus is missing and another plan remains'
   assert.throws(() => parseOfficialPricing(krw, krwDrifted, '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
 })
 
+test('OpenAI user pricing rejects seat qualifiers after the billing period', () => {
+  const usd = getOfficialSource('openai-chatgpt-plus-usd')
+  const krw = getOfficialSource('openai-chatgpt-plus-krw')
+  const usdSuffixes = [
+    '<h1>What is ChatGPT Plus?</h1><p>ChatGPT Plus costs $25 per month per seat.</p>',
+    '<h1>What is ChatGPT Plus?</h1><p>ChatGPT Plus costs $25 / month / seat.</p>',
+  ]
+  const krwSuffixes = [
+    '<h2>Plus</h2><p>ChatGPT Plus costs ₩35,000 per month per seat.</p>',
+    '<h2>Plus</h2><p>ChatGPT Plus costs ₩35,000 / 월 / seat.</p>',
+  ]
+
+  for (const body of usdSuffixes) assert.throws(() => parseOfficialPricing(usd, body, '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
+  for (const body of krwSuffixes) assert.throws(() => parseOfficialPricing(krw, body, '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
+})
+
 test('extracts Claude Pro USD monthly and annual pricing from the official Anthropic page fixture', async () => {
   const source = getOfficialSource('anthropic-claude-pro-usd')
   const page = await fixture('pricing-claude-us.html')

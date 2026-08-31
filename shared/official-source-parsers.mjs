@@ -192,9 +192,10 @@ function parseLmStudioChangelog(source, body, since) {
 function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after', unitPattern = '', forbidUnitPattern = '') {
   if (!text) return null
   const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:month|mo|월)|per\s+month|monthly|if\s+billed\s+monthly|billed\s+monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:year|yr|년)|per\s+year|annually|billed\s+up\s+front)` : ''
+  const suffixUnit = String.raw`(?:\s*(?:\/\s*|per\s+)(?:seat|user))?`
   const amountPattern = String(currency).toUpperCase() === 'KRW'
-    ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}`
-    : `(?:US\\s*)?\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s*${periods}`
+    ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}${suffixUnit}`
+    : `(?:US\\s*)?\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s*${periods}${suffixUnit}`
   for (const alias of aliases) {
     const haystack = text.toLowerCase()
     const needle = String(alias).toLowerCase()
