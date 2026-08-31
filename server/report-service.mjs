@@ -1,6 +1,7 @@
 import { createAdapters } from './adapters.mjs'
 import { clusterMessages, corroboratedClusters, dedupeMessages, rankClusters, summarizeClusters } from './pipeline.mjs'
 import { annotateMessage, normalizeSourceDefinition } from '../shared/briefing-contract.mjs'
+import { OFFICIAL_SOURCE_KINDS, getOfficialSource } from '../shared/official-source-catalog.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
 
 export class ReportService {
@@ -18,7 +19,7 @@ export class ReportService {
     const grouped = { crypto: [], ai: [] }
     const sourceRuns = []
     const observations = []
-    for (const source of data.sources.filter((item) => item.enabled !== false)) {
+    for (const source of this.configuredSources(data.sources).filter((item) => item.enabled !== false)) {
       const adapter = this.adapters[source.kind]
       if (!adapter) { sourceRuns.push(sourceRun(source, { error: `No adapter for ${source.kind}` })); continue }
       try {
@@ -59,6 +60,7 @@ export class ReportService {
     } catch (error) { return this.#deliveryState(report, 'failed', error.message) }
   }
   async #deliveryState(report, telegram, error) { report.delivery = { telegram, ...(error ? { error } : {}) }; await this.store.update((data) => { const index = data.reports.findIndex((item) => item.date === report.date); if (index >= 0) data.reports[index] = report; return data }); return report }
+  configuredSources(sources) { return mergeConfiguredSources(sources, this.env.OFFICIAL_SOURCES) }
   sourceHealth(source) { const adapter = this.adapters[source.kind]; return adapter ? adapter.health(source) : { ok: false, message: `No adapter for ${source.kind}` } }
 }
 
@@ -79,11 +81,14 @@ function sourceRun(source, { catalogSource, count = 0, warnings = [], error } = 
 
 function sanitizeSourceMessage(value) {
   const message = value instanceof Error ? value.message : String(value || 'Unknown error')
-  return message
+  const normalized = message.replace(/[\r\n\t]+/g, ' ')
+  if (/\bbearer\s+\S+|\b(?:authorization|cookies?|tokens?|secrets?|api[_-]?key|private[_ -]?key|pass(?:word|wd)?|session(?:[_-]?id)?)\s*[:=]/i.test(normalized)) {
+    return 'Source error details redacted'
+  }
+  return normalized
     .replace(/https?:\/\/[^\s)\]}]+/gi, '[redacted-url]')
     .replace(/\b(bearer)\s+\S+/gi, '$1 [redacted]')
-    .replace(/\b(authorization|cookie|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi, '$1=[redacted]')
-    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\b(authorization|cookies?|tokens?|secrets?|api[_-]?key|pass(?:word|wd)?|session(?:[_-]?id)?)\s*[:=]\s*\S+/gi, '$1=[redacted]')
     .slice(0, 240)
 }
 
@@ -94,6 +99,53 @@ function createSummaryProvider(env) {
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     const body = await response.json(); if (!Array.isArray(body.topics)) throw new Error('Provider response must contain topics[]'); return body.topics
   }
+}
+
+function mergeConfiguredSources(storedSources, rawOfficialSources) {
+  const merged = []
+  const catalogIds = new Set()
+  for (const source of Array.isArray(storedSources) ? storedSources : []) {
+    const catalogId = configuredCatalogId(source)
+    if (catalogId && catalogIds.has(catalogId)) continue
+    if (catalogId) catalogIds.add(catalogId)
+    merged.push(source)
+  }
+  for (const source of officialSourcesFromEnv(rawOfficialSources)) {
+    const catalogId = source.config.catalogId
+    if (catalogIds.has(catalogId)) continue
+    catalogIds.add(catalogId)
+    merged.push(source)
+  }
+  return merged
+}
+
+function officialSourcesFromEnv(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return []
+  let ids
+  try { ids = JSON.parse(raw) } catch { return [] }
+  if (!Array.isArray(ids)) return []
+  return ids.flatMap((id) => {
+    if (typeof id !== 'string' || !id.trim()) return []
+    try {
+      const catalog = getOfficialSource(id)
+      return [{
+        id: catalog.id,
+        kind: catalog.kind,
+        name: catalog.name,
+        detail: catalog.publisher,
+        section: 'ai',
+        enabled: true,
+        config: { catalogId: catalog.id },
+      }]
+    } catch {
+      return []
+    }
+  })
+}
+
+function configuredCatalogId(source) {
+  if (!OFFICIAL_SOURCE_KINDS.includes(source?.kind) || typeof source?.config?.catalogId !== 'string') return null
+  return source.config.catalogId.trim().toLowerCase() || null
 }
 function formatTelegramReport(report) { const lines = [`Signalroom — ${report.date}`, '']; for (const section of ['crypto', 'ai']) { lines.push(section === 'crypto' ? 'CRYPTO' : 'AI'); const topics = report.topics.filter((topic) => topic.section === section); if (!topics.length) lines.push('No verified topics today.'); topics.forEach((topic, index) => lines.push(`${index + 1}. ${topic.title}\n${topic.summary.slice(0, 350)}`)); lines.push('') } return lines.join('\n').slice(0, 4000) }
 export function localDate(date, timezone) { return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date) }

@@ -106,3 +106,116 @@ test('ReportService marks useful official results with parser warnings as partia
     checkedAt: report.sourceRuns[0].checkedAt, warnings: ['Missing required plan: Pro'],
   })
 })
+
+test('ReportService safely merges allowlisted OFFICIAL_SOURCES without duplicate catalog runs', async () => {
+  const state = {
+    sources: [
+      { id: 'stored-openai', kind: 'OfficialFeed', name: 'Stored OpenAI', section: 'ai', enabled: true, config: { catalogId: 'openai-news' } },
+      { id: 'community', kind: 'Reddit', name: 'LocalLLaMA', section: 'ai', enabled: true, config: { subreddit: 'LocalLLaMA' } },
+    ],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {
+    OFFICIAL_SOURCES: JSON.stringify([
+      ' openai-news ',
+      'ollama-releases',
+      'ollama-releases',
+      'not-in-catalog',
+      { catalogId: 'openai-chatgpt-plus-usd', url: 'http://127.0.0.1/private', headers: { cookie: 'must-not-persist' } },
+    ]),
+  })
+  const fetched = []
+  reports.adapters.Reddit = { fetchSince: async () => [] }
+  reports.adapters.OfficialFeed = {
+    fetchSince: async (source) => {
+      fetched.push(source)
+      return { source: getOfficialSource(source.config.catalogId), messages: [], observations: [], warnings: [] }
+    },
+    health: () => ({ ok: true, message: 'Allowlisted' }),
+  }
+
+  const report = await reports.generate('2026-08-31', true)
+
+  assert.deepEqual(fetched.map((source) => source.config.catalogId), ['openai-news', 'ollama-releases'])
+  assert.equal(report.sourceRuns.filter((run) => run.kind === 'OfficialFeed').length, 2)
+  const envSource = fetched.find((source) => source.config.catalogId === 'ollama-releases')
+  assert.deepEqual(envSource, {
+    id: 'ollama-releases', kind: 'OfficialFeed', name: 'Ollama releases', detail: 'Ollama', section: 'ai', enabled: true,
+    config: { catalogId: 'ollama-releases' },
+  })
+  assert.equal(Object.hasOwn(envSource, 'url'), false)
+  assert.equal(Object.hasOwn(envSource.config, 'headers'), false)
+})
+
+test('ReportService source listing uses the same env merge and respects stored disable overrides', () => {
+  const stateSources = [
+    { id: 'disabled-openai', kind: 'OfficialFeed', name: 'Stored OpenAI', section: 'ai', enabled: false, config: { catalogId: 'openai-news' } },
+    { id: 'community', kind: 'Reddit', name: 'LocalLLaMA', section: 'ai', enabled: true, config: { subreddit: 'LocalLLaMA' } },
+  ]
+  const reports = new ReportService({ read: async () => ({}), update: async (value) => value }, {
+    OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'ollama-releases']),
+  })
+
+  assert.equal(typeof reports.configuredSources, 'function')
+  if (typeof reports.configuredSources !== 'function') return
+  const listed = reports.configuredSources(stateSources)
+  assert.deepEqual(listed.map((source) => source.id), ['disabled-openai', 'community', 'ollama-releases'])
+  assert.equal(listed.filter((source) => source.config?.catalogId === 'openai-news').length, 1)
+})
+
+test('ReportService ignores malformed OFFICIAL_SOURCES without affecting stored community sources', async () => {
+  const state = {
+    sources: [{ id: 'community', kind: 'Reddit', name: 'LocalLLaMA', section: 'ai', enabled: true, config: { subreddit: 'LocalLLaMA' } }],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, { OFFICIAL_SOURCES: '{invalid json' })
+  let communityCalls = 0
+  reports.adapters.Reddit = { fetchSince: async () => { communityCalls += 1; return [] } }
+
+  const report = await reports.generate('2026-08-31', true)
+
+  assert.equal(communityCalls, 1)
+  assert.deepEqual(report.sourceRuns.map((run) => run.sourceId), ['community'])
+})
+
+test('ReportService redacts credential key-values before persisting source-run errors', async () => {
+  const state = {
+    sources: [
+      { id: 'password-source', kind: 'Reddit', name: 'Password source', section: 'ai', enabled: true, config: { subreddit: 'one' } },
+      { id: 'passwd-source', kind: 'Reddit', name: 'Passwd source', section: 'ai', enabled: true, config: { subreddit: 'two' } },
+      { id: 'session-source', kind: 'Reddit', name: 'Session source', section: 'ai', enabled: true, config: { subreddit: 'three' } },
+      { id: 'cookie-source', kind: 'Reddit', name: 'Cookie source', section: 'ai', enabled: true, config: { subreddit: 'four' } },
+    ],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {})
+  reports.adapters.Reddit = {
+    fetchSince: async (source) => {
+      const errors = {
+        'password-source': 'upstream password=fake-password detail',
+        'passwd-source': 'upstream passwd: fake-passwd detail',
+        'session-source': 'upstream session_id=fake-session detail',
+        'cookie-source': 'upstream cookie: first=fake-cookie; second=fake-other detail',
+      }
+      throw new Error(errors[source.id])
+    },
+  }
+
+  const report = await reports.generate('2026-08-31', true)
+  const serialized = JSON.stringify(report.sourceRuns)
+
+  assert.doesNotMatch(serialized, /fake-password|fake-passwd|fake-session|fake-cookie|fake-other/)
+  assert.equal(state.reports[0], report)
+  assert.deepEqual(report.sourceRuns.map((run) => run.error), [
+    'Source error details redacted',
+    'Source error details redacted',
+    'Source error details redacted',
+    'Source error details redacted',
+  ])
+})

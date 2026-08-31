@@ -161,7 +161,7 @@ const OFFICIAL_SOURCES = deepFreeze({
 
 export function getOfficialSource(id) {
   const key = typeof id === 'string' ? id.trim().toLowerCase() : ''
-  const source = OFFICIAL_SOURCES[key]
+  const source = Object.hasOwn(OFFICIAL_SOURCES, key) ? OFFICIAL_SOURCES[key] : undefined
   if (!source) throw new Error(`Unknown official source catalog id: ${key || '(missing)'}`)
   return source
 }
