@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "kv_namespaces": [{ "binding": "REPORTS", "id": "7debf7afd48a49259d46eb44fbd8261d" }],
   "vars": {
-    "OFFICIAL_SOURCES": "[\"openai-news\",\"openai-chatgpt-plus-usd\",\"anthropic-claude-code-releases\",\"anthropic-claude-pro-usd\",\"google-ai-blog\",\"google-gemini-cli-releases\",\"ollama-releases\",\"llama-cpp-releases\",\"lmstudio-changelog\",\"open-webui-releases\"]",
+    "OFFICIAL_SOURCES": "[\"openai-news\",\"openai-chatgpt-plus-usd\",\"anthropic-claude-code-releases\",\"anthropic-claude-pro-usd\",\"google-ai-blog\",\"google-gemini-cli-releases\",\"ollama-releases\",\"ollama-cloud-pricing\",\"llama-cpp-releases\",\"lmstudio-changelog\",\"open-webui-releases\"]",
     "AI_SOURCES": "[{\"kind\":\"Reddit\",\"name\":\"LocalLLaMA\",\"config\":{\"subreddit\":\"LocalLLaMA\"}},{\"kind\":\"Threads\",\"name\":\"Founder signals\",\"config\":{}}]",
     "TELEGRAM_SOURCES": "[{\"kind\":\"Telegram\",\"name\":\"JeJe Crypto Diary\",\"detail\":\"@JeJeCryptoDiary\",\"config\":{\"chatId\":\"@JeJeCryptoDiary\"}},{\"kind\":\"Telegram\",\"name\":\"Cryptocurrency Mage\",\"detail\":\"@cryptocurrencymage\",\"config\":{\"chatId\":\"@cryptocurrencymage\"}},{\"kind\":\"Telegram\",\"name\":\"PGY Info\",\"detail\":\"@pgyinfo\",\"config\":{\"chatId\":\"@pgyinfo\"}},{\"kind\":\"Telegram\",\"name\":\"Just Degen Guy\",\"detail\":\"@justdegenguy\",\"config\":{\"chatId\":\"@justdegenguy\"}},{\"kind\":\"Telegram\",\"name\":\"Mujammin123\",\"detail\":\"@mujammin123\",\"config\":{\"chatId\":\"@mujammin123\"}}]",
     "OPENAI_MODEL": "gpt-5-mini"

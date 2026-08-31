@@ -116,14 +116,36 @@ test('extracts required official USD plans and fails closed after parser drift',
   assert.throws(() => parseOfficialPricing(source, '<html><h1>Pricing temporarily unavailable</h1></html>', '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
 })
 
-test('extracts Claude Pro USD from the official Anthropic support page fixture', async () => {
+test('extracts Claude Pro USD monthly and annual pricing from the official Anthropic page fixture', async () => {
   const source = getOfficialSource('anthropic-claude-pro-usd')
   const page = await fixture('pricing-claude-us.html')
   const parsed = parseOfficialPricing(source, `<nav>Pro plan ${'navigation '.repeat(300)}</nav>${page}`, '2026-08-31T10:00:00.000Z')
 
-  assert.equal(parsed.observations.length, 1)
-  assert.equal(parsed.observations[0].vendor, 'Anthropic')
-  assert.equal(parsed.observations[0].product, 'Claude')
-  assert.equal(parsed.observations[0].plan, 'Pro')
-  assert.equal(parsed.observations[0].amountMinor, 2_000)
+  assert.equal(parsed.observations.length, 2)
+  const monthly = parsed.observations.find((item) => item.billingPeriod === 'month')
+  const annual = parsed.observations.find((item) => item.billingPeriod === 'year')
+  assert.equal(monthly.vendor, 'Anthropic')
+  assert.equal(monthly.product, 'Claude')
+  assert.equal(monthly.plan, 'Pro')
+  assert.equal(monthly.amountMinor, 2_000)
+  assert.equal(annual.plan, 'Pro annual')
+  assert.equal(annual.amountMinor, 20_000)
+  assert.deepEqual(annual.promotion, { kind: 'discount', label: 'Annual subscription discount', originalAmountMinor: 24_000 })
+})
+
+test('extracts Ollama cloud subscription prices and annual discount from the official pricing fixture', async () => {
+  const source = getOfficialSource('ollama-cloud-pricing')
+  const parsed = parseOfficialPricing(source, await fixture('pricing-local-llm.html'), '2026-08-31T10:00:00.000Z')
+
+  assert.equal(parsed.warnings.length, 0)
+  assert.equal(parsed.observations.length, 3)
+  const proMonthly = parsed.observations.find((item) => item.plan === 'Pro' && item.billingPeriod === 'month')
+  const proAnnual = parsed.observations.find((item) => item.plan === 'Pro annual')
+  const team = parsed.observations.find((item) => item.plan === 'Team')
+  assert.equal(proMonthly.amountMinor, 2_000)
+  assert.equal(proAnnual.amountMinor, 20_000)
+  assert.deepEqual(proAnnual.promotion, { kind: 'discount', label: 'Annual billing', originalAmountMinor: 24_000 })
+  assert.equal(team.amountMinor, 2_500)
+  assert.equal(team.unit, 'seat')
+  assert.throws(() => parseOfficialPricing(source, '<html><h1>Pricing temporarily unavailable</h1></html>', '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
 })

@@ -79,7 +79,7 @@ export function parseOfficialPricing(source, body, observedAt = new Date().toISO
   const observations = []
   const warnings = []
   for (const plan of source.pricing.plans || []) {
-    const amount = findPlanAmount(text, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod)
+    const amount = findPlanAmount(text, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition)
     if (amount === null) {
       if (plan.required !== false) warnings.push(`Missing required plan: ${plan.plan}`)
       continue
@@ -100,6 +100,7 @@ export function parseOfficialPricing(source, body, observedAt = new Date().toISO
       sourceKey: source.id,
       publisherId: source.publisherId,
       trustTier: source.trustTier,
+      ...(plan.promotion ? { promotion: plan.promotion } : {}),
     }))
   }
   const requiredCount = (source.pricing.plans || []).filter((plan) => plan.required !== false).length
@@ -188,8 +189,8 @@ function parseLmStudioChangelog(source, body, since) {
   return normalizeFeedItems(source, items, since)
 }
 
-function findPlanAmount(text, aliases, currency, billingPeriod) {
-  const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:month|mo|월)|per\s+month|monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:year|yr|년)|per\s+year|annually)` : ''
+function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after') {
+  const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:month|mo|월)|per\s+month|monthly|if\s+billed\s+monthly|billed\s+monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:year|yr|년)|per\s+year|annually|billed\s+up\s+front)` : ''
   const amountPattern = String(currency).toUpperCase() === 'KRW'
     ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}`
     : `(?:US\\s*)?\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s*${periods}`
@@ -200,7 +201,11 @@ function findPlanAmount(text, aliases, currency, billingPeriod) {
     while (needle && offset < haystack.length) {
       const index = haystack.indexOf(needle, offset)
       if (index < 0) break
-      const match = text.slice(index, index + 2_000).match(new RegExp(amountPattern, 'i'))
+      const window = amountPosition === 'before'
+        ? text.slice(Math.max(0, index - 2_000), index + needle.length)
+        : text.slice(index, index + 2_000)
+      const matches = [...window.matchAll(new RegExp(amountPattern, 'ig'))]
+      const match = amountPosition === 'before' ? matches.at(-1) : matches[0]
       if (match) return match.slice(1).find(Boolean) || null
       offset = index + needle.length
     }
