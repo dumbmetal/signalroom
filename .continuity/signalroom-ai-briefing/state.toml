@@ -1,0 +1,60 @@
+schema_version = 1
+task_id = "signalroom-ai-briefing"
+workspace = "/Users/sungha/signalroom"
+canonical_worktree = "/Users/sungha/.config/superpowers/worktrees/signalroom/feat-briefing-ui"
+base_branch = "main"
+base_commit = "22fe8ae3e7d92eab473ba0c6bd9952f59783387b"
+feature_branch = "feat/briefing-ui"
+feature_commit = "f44bbc659b5df21052cf545c2db3910c0619db94"
+updated_at = "2026-09-01"
+
+[next]
+action = "Obtain required review for PR #2, then recheck the stacked PRs in order."
+verification = "gh pr view 2 3 4 5 --repo dumbmetal/signalroom --json state,mergeable,mergeStateStatus,statusCheckRollup,reviewDecision"
+
+[blockers]
+required_review_pr = 2
+stale_conflict_worktree = "/private/tmp/claude-501/-Users-sungha-Desktop-EON-LLM-wiki/92f7874f-ee30-4de2-ab15-1b5a3fcd010d/scratchpad/sr-rehearse4"
+
+[[pull_requests]]
+number = 2
+base = "main"
+head = "feat/briefing-evidence-contract"
+head_commit = "ccfab0264ef744112377254a7b1c1a988ecded7e"
+merge_state = "BLOCKED"
+review = "REVIEW_REQUIRED"
+ci = "SUCCESS"
+
+[[pull_requests]]
+number = 3
+base = "feat/briefing-evidence-contract"
+head = "feat/official-ai-sources-pricing"
+head_commit = "e36ed07edea10521e81af9cc0874513b71a54f5f"
+merge_state = "CLEAN"
+review = ""
+ci = "SUCCESS"
+
+[[pull_requests]]
+number = 4
+base = "feat/official-ai-sources-pricing"
+head = "feat/briefing-classification-quality"
+head_commit = "775d62ee6c5cb9cd4bdb377775b431fa3a1646bc"
+merge_state = "CLEAN"
+review = ""
+ci = "SUCCESS"
+
+[[pull_requests]]
+number = 5
+base = "feat/briefing-classification-quality"
+head = "feat/briefing-ui"
+head_commit = "f44bbc659b5df21052cf545c2db3910c0619db94"
+merge_state = "CLEAN"
+review = ""
+ci = "SUCCESS"
+
+[verification]
+tests_rerun = false
+build_rerun = false
+diff_check = "PASS"
+ancestry_check = "PASS"
+canonical_worktree_clean = true
