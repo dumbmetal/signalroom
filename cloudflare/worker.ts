@@ -4,6 +4,11 @@ import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
 import { dedupeNearDuplicates, enrichTopicsWithHistory, isReportableTopic, topicHistoryFromReports } from '../shared/briefing-quality.mjs'
 
+export const BRIEFING_HISTORY_KEY = 'briefing-history'
+const HISTORY_MAX_REPORTS = 30
+const HISTORY_TTL_SECONDS = 60 * 60 * 24 * 90
+const DAY_MS = 24 * 60 * 60 * 1000
+
 interface Env {
   REPORTS: KVNamespace
   X_BEARER_TOKEN?: string
@@ -36,6 +41,8 @@ export default {
       if (!Array.isArray(report?.topics) || !Array.isArray(report?.sourceRuns) || !report?.date) return json({ error: 'Invalid report payload' }, 400)
       const imported = { ...normalizeReport(report), generatedAt: new Date().toISOString(), summaryProvider: 'mtplx-gateway' }
       await env.REPORTS.put('latest', JSON.stringify(imported), { expirationTtl: 60 * 60 * 24 * 90 })
+      const history = await readBriefingHistory(env, new Date())
+      await writeBriefingHistory(env, [...history, imported], new Date())
       return json(imported)
     }
     if (url.pathname === '/api/crawl' && request.method === 'POST') return json(await crawl(env, url.searchParams.get('summary') !== 'off'))
@@ -57,7 +64,10 @@ async function runFallbackCrawl(env: Env) {
 async function crawl(env: Env, useOpenAI = true) {
   const now = new Date()
   const previous = await readLatestReport(env)
-  const latest = previous
+  const historyReports = compactHistoryReports([
+    ...(await readBriefingHistory(env, now)),
+    ...(previous ? [previous] : []),
+  ], now)
   const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(now)
   const statuses: Array<{ sourceId: string; source: string; kind: string; ok: boolean; status: 'ok' | 'partial' | 'error'; count: number; checkedAt: string; warnings: string[]; error?: string }> = []
   const messages: Message[] = []
@@ -85,7 +95,7 @@ async function crawl(env: Env, useOpenAI = true) {
   const quality = buildTopicsWithHistory(messages, {
     now,
     reportDate,
-    topicHistory: topicHistoryFromReports(latest ? [latest] : [], { now }),
+    topicHistory: topicHistoryFromReports(historyReports, { now }),
     priceSnapshots,
   })
   let topics = quality.topics
@@ -94,6 +104,7 @@ async function crawl(env: Env, useOpenAI = true) {
   }
   const report = { date: reportDate, generatedAt: now.toISOString(), topics, topicHistory: quality.topicHistory, sourceRuns: statuses, priceSnapshots, summaryProvider: useOpenAI && env.OPENAI_API_KEY && !statuses.some((run) => run.source === 'OpenAI summarization' && !run.ok) ? 'openai' : 'deterministic' }
   await env.REPORTS.put('latest', JSON.stringify(report), { expirationTtl: 60 * 60 * 24 * 90 })
+  await writeBriefingHistory(env, [...historyReports, report], now)
   return report
 }
 
@@ -147,6 +158,49 @@ async function readLatestReport(env: Env) {
     return value && typeof value === 'object' ? value : null
   } catch {
     return null
+  }
+}
+
+async function readBriefingHistory(env: Env, now = new Date()) {
+  try {
+    const value = await env.REPORTS.get(BRIEFING_HISTORY_KEY, 'json')
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    return compactHistoryReports(parsed?.reports, now)
+  } catch {
+    return []
+  }
+}
+
+async function writeBriefingHistory(env: Env, reports, now = new Date()) {
+  const compacted = compactHistoryReports(reports, now)
+  await env.REPORTS.put(BRIEFING_HISTORY_KEY, JSON.stringify({ version: 1, reports: compacted }), { expirationTtl: HISTORY_TTL_SECONDS })
+}
+
+function compactHistoryReports(reports, now = new Date()) {
+  const currentTime = now instanceof Date ? now.getTime() : Date.parse(now)
+  const cutoff = currentTime - HISTORY_MAX_REPORTS * DAY_MS
+  const byDate = new Map()
+  for (const input of Array.isArray(reports) ? reports : []) {
+    const normalized = normalizeHistoryReport(input)
+    if (!normalized) continue
+    const generatedTime = Date.parse(normalized.generatedAt)
+    const reportTime = Date.parse(`${normalized.date}T12:00:00.000Z`)
+    const timestamp = Number.isFinite(generatedTime) ? generatedTime : reportTime
+    if (!Number.isFinite(timestamp) || timestamp < cutoff || timestamp > currentTime + DAY_MS) continue
+    const existing = byDate.get(normalized.date)
+    if (!existing || Date.parse(existing.generatedAt) <= generatedTime) byDate.set(normalized.date, normalized)
+  }
+  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date)).slice(-HISTORY_MAX_REPORTS)
+}
+
+function normalizeHistoryReport(report) {
+  if (!report || typeof report !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(String(report.date || ''))) return null
+  const generatedAt = validIsoDate(report.generatedAt) ? report.generatedAt : `${report.date}T12:00:00.000Z`
+  return {
+    date: String(report.date),
+    generatedAt,
+    topics: Array.isArray(report.topics) ? report.topics : [],
+    ...(Array.isArray(report.topicHistory) ? { topicHistory: report.topicHistory } : {}),
   }
 }
 
