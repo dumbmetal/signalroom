@@ -1,4 +1,4 @@
-import { annotateMessage, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { annotateMessage, BRIEFING_CONTENT_TYPES, CLAIM_STATUSES, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
 import { getOfficialSource, OFFICIAL_SOURCE_KINDS } from '../shared/official-source-catalog.mjs'
 import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'

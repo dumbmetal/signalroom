@@ -30,7 +30,6 @@ test('ReportService propagates configured independence keys into corroborating e
   assert.deepEqual(new Set(report.topics[0].evidence.map((item) => item.independenceKey)), new Set(['vendor-a', 'vendor-b']))
 })
 
-<<<<<<< HEAD
 test('ReportService persists official messages and price history while isolating a failed source', async () => {
   const previousPrice = normalizePriceObservation({
     vendor: 'OpenAI', product: 'ChatGPT', plan: 'Plus', region: 'US', currency: 'USD', amountMinor: 1_500,
