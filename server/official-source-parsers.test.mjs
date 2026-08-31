@@ -116,6 +116,25 @@ test('extracts required official USD plans and fails closed after parser drift',
   assert.throws(() => parseOfficialPricing(source, '<html><h1>Pricing temporarily unavailable</h1></html>', '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
 })
 
+test('extracts ChatGPT Plus KRW from its scoped official pricing card', async () => {
+  const source = getOfficialSource('openai-chatgpt-plus-krw')
+  const parsed = parseOfficialPricing(source, await fixture('pricing-chatgpt-kr.html'), '2026-08-31T10:00:00.000Z')
+
+  assert.equal(parsed.observations.length, 1)
+  assert.equal(parsed.observations[0].currency, 'KRW')
+  assert.equal(parsed.observations[0].amountMinor, 29_000)
+})
+
+test('OpenAI pricing fails closed when Plus is missing and another plan remains', () => {
+  const usd = getOfficialSource('openai-chatgpt-plus-usd')
+  const krw = getOfficialSource('openai-chatgpt-plus-krw')
+  const usdDrifted = '<h1>What is ChatGPT Plus?</h1><p>Pricing temporarily unavailable.</p><h2>Business</h2><p>$25 / seat / month</p>'
+  const krwDrifted = '<h2>Plus</h2><p>Pricing temporarily unavailable.</p><h2>Business</h2><p>₩35,000 / seat / month</p>'
+
+  assert.throws(() => parseOfficialPricing(usd, usdDrifted, '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
+  assert.throws(() => parseOfficialPricing(krw, krwDrifted, '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
+})
+
 test('extracts Claude Pro USD monthly and annual pricing from the official Anthropic page fixture', async () => {
   const source = getOfficialSource('anthropic-claude-pro-usd')
   const page = await fixture('pricing-claude-us.html')

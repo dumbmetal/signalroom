@@ -122,7 +122,7 @@ const OFFICIAL_SOURCES = deepFreeze({
     parserKey: 'subscription-pricing',
     pricing: {
       vendor: 'OpenAI', product: 'ChatGPT', region: 'US', currency: 'USD', taxMode: 'unknown',
-      plans: [{ plan: 'Plus', aliases: ['ChatGPT Plus', 'Plus'], billingPeriod: 'month', unit: 'user', required: true }],
+      plans: [{ plan: 'Plus', cardHeading: 'What is ChatGPT Plus?', aliases: ['ChatGPT Plus', 'Plus'], billingPeriod: 'month', unit: 'user', forbidUnitPattern: 'seat', required: true }],
     },
   },
   'openai-chatgpt-plus-krw': {
@@ -138,7 +138,7 @@ const OFFICIAL_SOURCES = deepFreeze({
     parserKey: 'subscription-pricing',
     pricing: {
       vendor: 'OpenAI', product: 'ChatGPT', region: 'KR', currency: 'KRW', taxMode: 'unknown',
-      plans: [{ plan: 'Plus', aliases: ['ChatGPT Plus', 'Plus'], billingPeriod: 'month', unit: 'user', required: true }],
+      plans: [{ plan: 'Plus', cardHeading: 'Plus', aliases: ['ChatGPT Plus', 'Plus'], billingPeriod: 'month', unit: 'user', forbidUnitPattern: 'seat', required: true }],
     },
   },
   'anthropic-claude-pro-usd': {
@@ -155,8 +155,8 @@ const OFFICIAL_SOURCES = deepFreeze({
     pricing: {
       vendor: 'Anthropic', product: 'Claude', region: 'US', currency: 'USD', taxMode: 'unknown',
       plans: [
-        { plan: 'Pro', cardHeading: 'Pro', aliases: ['billed monthly'], amountPosition: 'before', billingPeriod: 'month', unit: 'user', required: true },
-        { plan: 'Pro annual', cardHeading: 'Pro', aliases: ['annual subscription discount'], billingPeriod: 'year', unit: 'user', required: true, promotion: { kind: 'discount', label: 'Annual subscription discount', originalAmountMinor: 24_000 } },
+        { plan: 'Pro', cardHeading: 'Pro', aliases: ['billed monthly'], amountPosition: 'before', billingPeriod: 'month', unit: 'user', forbidUnitPattern: 'seat', required: true },
+        { plan: 'Pro annual', cardHeading: 'Pro', aliases: ['annual subscription discount'], billingPeriod: 'year', unit: 'user', forbidUnitPattern: 'seat', required: true, promotion: { kind: 'discount', label: 'Annual subscription discount', originalAmountMinor: 24_000 } },
       ],
     },
   },
@@ -174,8 +174,8 @@ const OFFICIAL_SOURCES = deepFreeze({
     pricing: {
       vendor: 'Ollama', product: 'Ollama Cloud', region: 'US', currency: 'USD', taxMode: 'unknown',
       plans: [
-        { plan: 'Pro', cardHeading: 'Pro', aliases: ['Pro'], billingPeriod: 'month', unit: 'user', required: true },
-        { plan: 'Pro annual', cardHeading: 'Pro', aliases: ['billed annually'], amountPosition: 'before', billingPeriod: 'year', unit: 'user', required: true, promotion: { kind: 'discount', label: 'Annual billing', originalAmountMinor: 24_000 } },
+        { plan: 'Pro', cardHeading: 'Pro', aliases: ['Pro'], billingPeriod: 'month', unit: 'user', forbidUnitPattern: 'seat', required: true },
+        { plan: 'Pro annual', cardHeading: 'Pro', aliases: ['billed annually'], amountPosition: 'before', billingPeriod: 'year', unit: 'user', forbidUnitPattern: 'seat', required: true, promotion: { kind: 'discount', label: 'Annual billing', originalAmountMinor: 24_000 } },
         { plan: 'Team', cardHeading: 'Team', aliases: ['Introductory pricing'], billingPeriod: 'month', unit: 'seat', unitPattern: 'seat', required: true, promotion: { kind: 'introductory', label: 'Introductory pricing' } },
       ],
     },

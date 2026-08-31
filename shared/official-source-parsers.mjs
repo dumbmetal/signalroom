@@ -75,12 +75,11 @@ export function parseOfficialPage(source, body, since) {
 
 export function parseOfficialPricing(source, body, observedAt = new Date().toISOString()) {
   if (source?.kind !== 'OfficialPricing' || source?.parserKey !== 'subscription-pricing' || !source?.pricing) throw new Error('Unsupported official pricing parser')
-  const text = cleanMarkup(body)
   const observations = []
   const warnings = []
   for (const plan of source.pricing.plans || []) {
-    const planText = plan.cardHeading ? extractPricingCard(body, plan.cardHeading) : text
-    const amount = findPlanAmount(planText, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition, plan.unitPattern)
+    const planText = extractPricingCard(body, plan.cardHeading)
+    const amount = findPlanAmount(planText, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition, plan.unitPattern, plan.forbidUnitPattern)
     if (amount === null) {
       if (plan.required !== false) warnings.push(`Missing required plan: ${plan.plan}`)
       continue
@@ -190,7 +189,7 @@ function parseLmStudioChangelog(source, body, since) {
   return normalizeFeedItems(source, items, since)
 }
 
-function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after', unitPattern = '') {
+function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after', unitPattern = '', forbidUnitPattern = '') {
   if (!text) return null
   const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:month|mo|월)|per\s+month|monthly|if\s+billed\s+monthly|billed\s+monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:year|yr|년)|per\s+year|annually|billed\s+up\s+front)` : ''
   const amountPattern = String(currency).toUpperCase() === 'KRW'
@@ -208,7 +207,8 @@ function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition =
         : text.slice(index, index + 2_000)
       const matches = [...window.matchAll(new RegExp(amountPattern, 'ig'))]
       const match = amountPosition === 'before' ? matches.at(-1) : matches[0]
-      if (match && (!unitPattern || match[0].toLowerCase().includes(String(unitPattern).toLowerCase()))) return match.slice(1).find(Boolean) || null
+      const matchedText = match?.[0]?.toLowerCase() || ''
+      if (match && (!unitPattern || matchedText.includes(String(unitPattern).toLowerCase())) && (!forbidUnitPattern || !matchedText.includes(String(forbidUnitPattern).toLowerCase()))) return match.slice(1).find(Boolean) || null
       offset = index + needle.length
     }
   }
