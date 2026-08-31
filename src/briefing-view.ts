@@ -110,7 +110,7 @@ export function priceChangeView(topic: Topic, observations: PriceObservation[]):
   for (const key of keys) {
     const ordered = observations
       .filter((observation) => observation.key === key)
-      .sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt) || Date.parse(right.lastVerifiedAt) - Date.parse(left.lastVerifiedAt))
+      .sort(comparePriceObservations)
     const current = ordered[0]
     if (!current) continue
     const currentSignature = priceObservationSignature(current)
@@ -333,6 +333,16 @@ function priceObservationSignature(observation: PriceObservation) {
     promotion?.originalAmountMinor ?? null,
     promotion?.endsAt ?? null,
   ])
+}
+
+function comparePriceObservations(left: PriceObservation, right: PriceObservation) {
+  const verifiedDifference = Date.parse(right.lastVerifiedAt) - Date.parse(left.lastVerifiedAt)
+  if (verifiedDifference !== 0) return verifiedDifference
+  const observedDifference = Date.parse(right.observedAt) - Date.parse(left.observedAt)
+  if (observedDifference !== 0) return observedDifference
+  const leftSignature = priceObservationSignature(left)
+  const rightSignature = priceObservationSignature(right)
+  return leftSignature < rightSignature ? -1 : leftSignature > rightSignature ? 1 : 0
 }
 
 function safeSourceCopy(value: unknown, fallback: string): string | undefined {

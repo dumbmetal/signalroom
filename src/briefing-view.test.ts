@@ -299,6 +299,32 @@ test('keeps a compatible promotion-only change while deduplicating identical off
   assert.equal(change.percentChange, undefined)
 })
 
+test('uses latest verification to show a regular price restored after a promotion', () => {
+  const key = 'openai:chatgpt:plus:US:USD:month:seat'
+  const normalized = normalizeLiveReport(report({
+    topics: [topic({ contentType: 'discount_offer', priceKeys: [key] })],
+    priceSnapshots: [
+      price({
+        observedAt: '2026-08-01T00:00:00.000Z',
+        lastVerifiedAt: '2026-08-31T00:05:00.000Z',
+        contentHash: 'regular-restored',
+      }),
+      price({
+        observedAt: '2026-08-20T00:00:00.000Z',
+        lastVerifiedAt: '2026-08-20T00:05:00.000Z',
+        contentHash: 'promotion',
+        promotion: { kind: 'trial', label: 'One month free', endsAt: '2026-08-25T00:00:00.000Z' },
+      }),
+    ],
+  }))
+  assert.ok(normalized)
+
+  const [change] = priceChangeView(normalized.topics[0], normalized.priceSnapshots)
+  assert.equal(change.current.promotion, undefined)
+  assert.equal(change.current.lastVerifiedAt, '2026-08-31T00:05:00.000Z')
+  assert.equal(change.previous?.promotion?.label, 'One month free')
+})
+
 test('labels a single valid observation as first observed', () => {
   const normalized = normalizeLiveReport(report({
     topics: [topic({ contentType: 'discount_offer', priceKeys: ['openai:chatgpt:plus:US:USD:month:seat'] })],
