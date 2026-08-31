@@ -92,7 +92,6 @@ export interface BriefingReport {
   topics: Topic[]
   priceSnapshots: PriceObservation[]
   sourceRuns: SourceRun[] | null
->>>>>>> fc74179 (feat: add safe briefing view model)
 }
 
 export interface Source {
