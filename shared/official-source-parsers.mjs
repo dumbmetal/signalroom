@@ -79,7 +79,8 @@ export function parseOfficialPricing(source, body, observedAt = new Date().toISO
   const observations = []
   const warnings = []
   for (const plan of source.pricing.plans || []) {
-    const amount = findPlanAmount(text, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition)
+    const planText = plan.cardHeading ? extractPricingCard(body, plan.cardHeading) : text
+    const amount = findPlanAmount(planText, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition, plan.unitPattern)
     if (amount === null) {
       if (plan.required !== false) warnings.push(`Missing required plan: ${plan.plan}`)
       continue
@@ -189,7 +190,8 @@ function parseLmStudioChangelog(source, body, since) {
   return normalizeFeedItems(source, items, since)
 }
 
-function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after') {
+function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after', unitPattern = '') {
+  if (!text) return null
   const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:month|mo|월)|per\s+month|monthly|if\s+billed\s+monthly|billed\s+monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:year|yr|년)|per\s+year|annually|billed\s+up\s+front)` : ''
   const amountPattern = String(currency).toUpperCase() === 'KRW'
     ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}`
@@ -206,11 +208,23 @@ function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition =
         : text.slice(index, index + 2_000)
       const matches = [...window.matchAll(new RegExp(amountPattern, 'ig'))]
       const match = amountPosition === 'before' ? matches.at(-1) : matches[0]
-      if (match) return match.slice(1).find(Boolean) || null
+      if (match && (!unitPattern || match[0].toLowerCase().includes(String(unitPattern).toLowerCase()))) return match.slice(1).find(Boolean) || null
       offset = index + needle.length
     }
   }
   return null
+}
+
+function extractPricingCard(body, heading) {
+  const escapedHeading = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (!escapedHeading) return ''
+  const headingPattern = new RegExp(`<h([1-6])\\b[^>]*>\\s*${escapedHeading}\\s*</h\\1\\s*>`, 'i')
+  const match = headingPattern.exec(String(body || ''))
+  if (!match) return ''
+  const nextHeadingPattern = /<h[1-6]\b[^>]*>/ig
+  nextHeadingPattern.lastIndex = match.index + match[0].length
+  const next = nextHeadingPattern.exec(String(body || ''))
+  return cleanMarkup(String(body || '').slice(match.index, next?.index || String(body || '').length))
 }
 
 function tagText(block, names) {

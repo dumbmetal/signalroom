@@ -155,8 +155,8 @@ const OFFICIAL_SOURCES = deepFreeze({
     pricing: {
       vendor: 'Anthropic', product: 'Claude', region: 'US', currency: 'USD', taxMode: 'unknown',
       plans: [
-        { plan: 'Pro', aliases: ['billed monthly'], amountPosition: 'before', billingPeriod: 'month', unit: 'user', required: true },
-        { plan: 'Pro annual', aliases: ['annual subscription discount', 'Pro plan', 'Claude Pro', 'Pro'], billingPeriod: 'year', unit: 'user', required: true, promotion: { kind: 'discount', label: 'Annual subscription discount', originalAmountMinor: 24_000 } },
+        { plan: 'Pro', cardHeading: 'Pro', aliases: ['billed monthly'], amountPosition: 'before', billingPeriod: 'month', unit: 'user', required: true },
+        { plan: 'Pro annual', cardHeading: 'Pro', aliases: ['annual subscription discount'], billingPeriod: 'year', unit: 'user', required: true, promotion: { kind: 'discount', label: 'Annual subscription discount', originalAmountMinor: 24_000 } },
       ],
     },
   },
@@ -174,9 +174,9 @@ const OFFICIAL_SOURCES = deepFreeze({
     pricing: {
       vendor: 'Ollama', product: 'Ollama Cloud', region: 'US', currency: 'USD', taxMode: 'unknown',
       plans: [
-        { plan: 'Pro', aliases: ['Pro'], billingPeriod: 'month', unit: 'user', required: true },
-        { plan: 'Pro annual', aliases: ['Pro'], billingPeriod: 'year', unit: 'user', required: true, promotion: { kind: 'discount', label: 'Annual billing', originalAmountMinor: 24_000 } },
-        { plan: 'Team', aliases: ['Introductory pricing'], billingPeriod: 'month', unit: 'seat', required: true },
+        { plan: 'Pro', cardHeading: 'Pro', aliases: ['Pro'], billingPeriod: 'month', unit: 'user', required: true },
+        { plan: 'Pro annual', cardHeading: 'Pro', aliases: ['billed annually'], amountPosition: 'before', billingPeriod: 'year', unit: 'user', required: true, promotion: { kind: 'discount', label: 'Annual billing', originalAmountMinor: 24_000 } },
+        { plan: 'Team', cardHeading: 'Team', aliases: ['Introductory pricing'], billingPeriod: 'month', unit: 'seat', unitPattern: 'seat', required: true, promotion: { kind: 'introductory', label: 'Introductory pricing' } },
       ],
     },
   },
