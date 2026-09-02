@@ -15,6 +15,10 @@ interface Env {
 
 type Message = { source: string; sourceId: string; externalId?: string; sourceKey?: string; publisherId?: string; independenceKey?: string; trustTier?: string; canonicalUrl?: string; contentHash?: string; text: string; url: string; publishedAt: string; engagement: number }
 type TopicCluster = { terms: Set<string>; posts: Message[]; postTerms: Array<{ sourceId: string; independenceKey: string; terms: string[] }> }
+type TelegramResponse = { result?: any[] }
+type RedditResponse = { data?: { children?: Array<{ data: any }> } }
+type SocialResponse = { data?: any[] }
+type OpenAIResponse = { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -33,7 +37,10 @@ export default {
       await env.REPORTS.put('latest', JSON.stringify(imported), { expirationTtl: 60 * 60 * 24 * 90 })
       return json(imported)
     }
-    if (url.pathname === '/api/crawl' && request.method === 'POST') return json(await crawl(env, url.searchParams.get('summary') !== 'off'))
+    if (url.pathname === '/api/crawl' && request.method === 'POST') {
+      if (!env.REPORT_IMPORT_TOKEN || !await hasValidBearerToken(request, env.REPORT_IMPORT_TOKEN)) return json({ error: 'Unauthorized' }, 401)
+      return json(await crawl(env, url.searchParams.get('summary') !== 'off'))
+    }
     return new Response('Signalroom crawler is online. Use the Pages website for the dashboard.', { headers: { 'content-type': 'text/plain; charset=utf-8' } })
   },
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
@@ -87,24 +94,24 @@ async function fetchSource(source: any, env: Env): Promise<Message[]> {
     try { return await fetchTelegramPublicChannel(source) } catch (publicError) {
       if (!env.TELEGRAM_BOT_TOKEN) throw publicError
     }
-    const response = await request(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates?limit=100&timeout=0`)
+    const response = await request<TelegramResponse>(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates?limit=100&timeout=0`)
     const chatId = String(source.config?.chatId || source.detail || '')
     return (response.result || []).map((update: any) => update.channel_post || update.message).filter(Boolean).filter((post: any) => String(post.chat?.id) === chatId || `@${post.chat?.username || ''}`.toLowerCase() === chatId.toLowerCase()).map((post: any) => ({ externalId: String(post.message_id), source: 'Telegram', sourceId: source.name, text: post.text || post.caption || '', url: post.chat?.username ? `https://t.me/${post.chat.username}/${post.message_id}` : '', publishedAt: new Date(post.date * 1000).toISOString(), engagement: 0 })).filter((post: Message) => post.text)
   }
   if (source.kind === 'Reddit') {
     const subreddit = source.config?.subreddit || source.name
-    const response = await request(`https://www.reddit.com/r/${encodeURIComponent(subreddit)}/hot.json?limit=50`, { headers: { 'User-Agent': 'signalroom-cloudflare/1.0' } })
+    const response = await request<RedditResponse>(`https://www.reddit.com/r/${encodeURIComponent(subreddit)}/hot.json?limit=50`, { headers: { 'User-Agent': 'signalroom-cloudflare/1.0' } })
     return (response.data?.children || []).map(({ data }: any) => ({ externalId: data.name, source: 'Reddit', sourceId: `r/${subreddit}`, text: `${data.title}. ${data.selftext || ''}`, url: `https://reddit.com${data.permalink}`, publishedAt: new Date(data.created_utc * 1000).toISOString(), engagement: data.score || 0 }))
   }
   if (source.kind === 'X') {
     if (!env.X_BEARER_TOKEN) throw new Error('X_BEARER_TOKEN missing')
     const params = new URLSearchParams({ query: source.config?.query || source.detail, max_results: '50', 'tweet.fields': 'created_at,public_metrics' })
-    const response = await request(`https://api.x.com/2/tweets/search/recent?${params}`, { headers: { Authorization: `Bearer ${env.X_BEARER_TOKEN}` } })
+    const response = await request<SocialResponse>(`https://api.x.com/2/tweets/search/recent?${params}`, { headers: { Authorization: `Bearer ${env.X_BEARER_TOKEN}` } })
     return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'X', sourceId: source.name, text: post.text, url: `https://x.com/i/status/${post.id}`, publishedAt: post.created_at, engagement: post.public_metrics?.like_count || 0 }))
   }
   if (!env.THREADS_ACCESS_TOKEN || !source.config?.userId) throw new Error('Threads access token or userId missing')
   const params = new URLSearchParams({ fields: 'id,text,timestamp,permalink,username', access_token: env.THREADS_ACCESS_TOKEN, limit: '50' })
-  const response = await request(`https://graph.threads.net/v1.0/${encodeURIComponent(source.config.userId)}/threads?${params}`)
+  const response = await request<SocialResponse>(`https://graph.threads.net/v1.0/${encodeURIComponent(source.config.userId)}/threads?${params}`)
   return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'Threads', sourceId: source.name, text: post.text, url: post.permalink, publishedAt: post.timestamp, engagement: 0 }))
 }
 
@@ -266,16 +273,16 @@ function applyModelSummaries(topics: any[], modelTopics: any[]) {
 }
 
 async function summarizeWithOpenAI(topics: any[], env: Env) {
-  const response = await request('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: env.OPENAI_MODEL || 'gpt-5-mini', store: false, input: [{ role: 'system', content: 'You summarize conversation clusters. Return only valid JSON: an array of objects with rank, section, title, summary, signal, sources, evidence. Preserve evidence URLs and do not invent facts.' }, { role: 'user', content: JSON.stringify(topics) }] }) })
+  const response = await request<OpenAIResponse>('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: env.OPENAI_MODEL || 'gpt-5-mini', store: false, input: [{ role: 'system', content: 'You summarize conversation clusters. Return only valid JSON: an array of objects with rank, section, title, summary, signal, sources, evidence. Preserve evidence URLs and do not invent facts.' }, { role: 'user', content: JSON.stringify(topics) }] }) })
   const outputText = response.output_text || response.output?.flatMap((item: any) => item.content || []).map((part: any) => part.text || '').join('') || ''
   const parsed = JSON.parse(outputText)
   if (!Array.isArray(parsed)) throw new Error('OpenAI response was not an array')
   return parsed
 }
 
-async function request(url: string, init?: RequestInit) { const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) }); if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return response.json() }
+async function request<T>(url: string, init?: RequestInit): Promise<T> { const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) }); if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return response.json() as Promise<T> }
 async function requestText(url: string) { const response = await fetch(url, { headers: { 'User-Agent': 'Signalroom/1.0' }, signal: AbortSignal.timeout(15_000) }); if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return response.text() }
-function corsHeaders() { return { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,OPTIONS', 'access-control-allow-headers': 'content-type' } }
+function corsHeaders() { return { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,OPTIONS', 'access-control-allow-headers': 'content-type, authorization' } }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...corsHeaders() } }) }
 async function hasValidBearerToken(request: Request, expected: string) {
   const actual = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')

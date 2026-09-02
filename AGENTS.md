@@ -41,6 +41,7 @@ pnpm dev       # Vite 개발 화면
 pnpm start     # 빌드된 화면 + 로컬 API, 127.0.0.1:8787
 pnpm test      # server/ 및 cloudflare/ 테스트
 pnpm build     # TypeScript 검사 + Vite 빌드
+pnpm check:worker # Worker 타입 + Wrangler 타입 설정 검사
 ```
 
 작업을 끝내기 전에 기본 검증은 다음 순서로 실행합니다.
@@ -61,6 +62,7 @@ pnpm test && pnpm build
 - 날짜·스케줄은 고정 UTC 오프셋이 아니라 `Europe/London` 같은 IANA 시간대를 사용하고 DST 테스트를 유지합니다.
 - `data/store.json`, `.env`, `.env.local`, 토큰·쿠키·세션·API 키를 커밋하거나 출력하지 않습니다.
 - `wrangler.jsonc`의 공개 설정과 Cloudflare secret을 혼동하지 않습니다. secret 값은 로컬 또는 Cloudflare secret 저장소에만 둡니다.
+- Worker의 수동 `POST /api/crawl`과 `POST /api/report/import`는 `REPORT_IMPORT_TOKEN` Bearer 인증을 사용합니다. 예약 실행은 Worker 스케줄러만 호출합니다.
 - 라이브 소스에 의존하는 테스트를 만들지 말고, 네트워크·자격증명이 없어도 통과하는 단위 테스트를 우선합니다.
 - 배포 변경은 별도 리뷰 후 수행합니다. PR 검증이 끝났다고 곧바로 운영 배포로 간주하지 않습니다.
 

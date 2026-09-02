@@ -39,6 +39,11 @@ test('report normalization keeps URL-only legacy evidence from independent sourc
   assert.equal(report.topics[0].independentSourceCount, 2)
 })
 
+test('manual crawl requires the report import bearer token', async () => {
+  const response = await worker.fetch(new Request('https://example.com/api/crawl', { method: 'POST' }), { REPORTS: {}, REPORT_IMPORT_TOKEN: 'test-token' })
+  assert.equal(response.status, 401)
+})
+
 test('evidence always contains every corroborating channel before extra posts', () => {
   const manyAlpha = Array.from({ length: 7 }, (_, index) => post('alpha', `BTC ETF inflow update ${index}`, 20 - index, index + 1))
   const topics = buildTopics([...manyAlpha, post('beta', 'BTC ETF inflow update confirmed', 10, 99)])
