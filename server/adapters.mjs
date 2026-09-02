@@ -1,11 +1,24 @@
 import { normalizeMessage } from './pipeline.mjs'
+import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
+import { resolveOfficialSource } from '../shared/official-source-catalog.mjs'
 
 export function createAdapters(env = process.env) {
+  const officialAdapter = (kind) => ({
+    kind,
+    health: (source) => {
+      try { const catalog = resolveOfficialSource(source); return { ok: true, message: `Allowlisted catalog source: ${catalog.name}` } }
+      catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'Official source is invalid' } }
+    },
+    fetchSince: (source, since) => collectOfficialSource(source, { since }),
+  })
   return {
     Reddit: { kind: 'Reddit', health: () => ({ ok: true, message: 'Public JSON access' }), fetchSince: (source, since) => fetchReddit(source, since, env) },
     X: { kind: 'X', health: () => ({ ok: Boolean(env.X_BEARER_TOKEN), message: env.X_BEARER_TOKEN ? 'Configured' : 'X_BEARER_TOKEN missing' }), fetchSince: (source, since) => fetchX(source, since, env) },
     Threads: { kind: 'Threads', health: () => ({ ok: Boolean(env.THREADS_ACCESS_TOKEN), message: env.THREADS_ACCESS_TOKEN ? 'Configured' : 'THREADS_ACCESS_TOKEN missing' }), fetchSince: (source, since) => fetchThreads(source, since, env) },
     Telegram: { kind: 'Telegram', health: () => ({ ok: Boolean(env.TELEGRAM_BOT_TOKEN), message: env.TELEGRAM_BOT_TOKEN ? 'Bot configured' : 'TELEGRAM_BOT_TOKEN missing' }), fetchSince: (source, since) => fetchTelegram(source, since, env) },
+    OfficialFeed: officialAdapter('OfficialFeed'),
+    OfficialPage: officialAdapter('OfficialPage'),
+    OfficialPricing: officialAdapter('OfficialPricing'),
   }
 }
 

@@ -1,4 +1,5 @@
 import { canonicalizeUrl, countIndependentCorroboration, fingerprintText, independenceKeyFor, normalizeIdentityKey, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { dedupeNearDuplicates } from '../shared/briefing-quality.mjs'
 
 const STOP_WORDS = new Set(['about', 'after', 'again', 'also', 'and', 'are', 'been', 'before', 'being', 'between', 'but', 'can', 'could', 'from', 'have', 'into', 'more', 'most', 'not', 'over', 'that', 'the', 'their', 'there', 'they', 'this', 'through', 'today', 'very', 'what', 'when', 'where', 'which', 'while', 'with', 'would', 'your'])
 
@@ -17,15 +18,7 @@ export function normalizeMessage(input) {
 }
 
 export function dedupeMessages(messages) {
-  const seen = new Set()
-  return messages.filter((message) => {
-    const normalized = normalizeMessage(message)
-    const textKey = normalized.text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 180)
-    const key = normalized.canonicalUrl || normalized.url || `${normalized.source}:${textKey}`
-    if (!textKey || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  return dedupeNearDuplicates(messages.map((message) => ({ ...message, ...normalizeMessage(message) })))
 }
 
 export function clusterMessages(messages) {
@@ -64,14 +57,31 @@ export function corroboratedClusters(clusters, minimumSources = 2) {
 
 export async function summarizeClusters(clusters, section, provider = null) {
   if (!clusters.length) return []
+  const deterministic = clusters.map((cluster, index) => fallbackTopic(cluster, section, index))
   if (provider) {
-    try { return await provider(clusters, section) } catch (error) { console.warn(`Summary provider failed; using deterministic fallback: ${error.message}`) }
+    try { return applyEditorialSummaries(deterministic, await provider(clusters, section)) } catch (error) { console.warn(`Summary provider failed; using deterministic fallback: ${error.message}`) }
   }
-  return clusters.map((cluster, index) => fallbackTopic(cluster, section, index))
+  return deterministic
+}
+
+function applyEditorialSummaries(topics, summaries) {
+  if (!Array.isArray(summaries)) return topics
+  return topics.map((topic, index) => {
+    const summary = summaries.find((candidate) => candidate?.id === topic.id)
+      || summaries.find((candidate) => Number(candidate?.rank) === topic.rank)
+      || summaries[index]
+    if (!summary) return topic
+    return {
+      ...topic,
+      title: typeof summary.title === 'string' && summary.title.trim() ? summary.title.trim() : topic.title,
+      summary: typeof summary.summary === 'string' && summary.summary.trim() ? summary.summary.trim() : topic.summary,
+    }
+  })
 }
 
 function fallbackTopic(cluster, section, index) {
   const sortedTerms = [...cluster.terms].slice(0, 4)
+  const priceKeys = [...new Set(cluster.messages.flatMap((message) => Array.isArray(message.priceKeys) ? message.priceKeys : []).filter(Boolean))]
   const evidence = selectCorroboratingEvidence(cluster.messages, 5).map((message) => ({
     source: message.source, label: message.sourceId, author: message.author, excerpt: message.text.slice(0, 240), time: message.publishedAt, url: message.url,
     sourceKey: message.sourceKey, publisherId: message.publisherId, independenceKey: independentKey(message), trustTier: message.trustTier, contentHash: message.contentHash,
@@ -84,6 +94,7 @@ function fallbackTopic(cluster, section, index) {
     signal: `${cluster.messages.length} post${cluster.messages.length === 1 ? '' : 's'} across ${sourceCount} independent source${sourceCount === 1 ? '' : 's'}`,
     sources: [...new Set(cluster.messages.map((message) => message.sourceId))],
     confidence: sourceCount >= 3 ? 'High confidence' : sourceCount === 2 ? 'Mixed signal' : 'Early signal', evidence,
+    ...(priceKeys.length ? { priceKeys } : {}),
   }
 }
 function independentKey(message) { return independenceKeyFor(message) }

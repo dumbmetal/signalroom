@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { ReportService, localMidnightUtc } from './report-service.mjs'
+import { getOfficialSource } from '../shared/official-source-catalog.mjs'
+import { normalizePriceObservation } from '../shared/price-snapshots.mjs'
+import { updateTopicHistory } from '../shared/briefing-quality.mjs'
 
 test('London report windows follow GMT and BST at local midnight', () => {
   assert.equal(localMidnightUtc('2026-01-15', 'Europe/London'), '2026-01-15T00:00:00.000Z')
@@ -24,4 +28,275 @@ test('ReportService propagates configured independence keys into corroborating e
 
   const report = await reports.generate('2026-08-24', true)
   assert.deepEqual(new Set(report.topics[0].evidence.map((item) => item.independenceKey)), new Set(['vendor-a', 'vendor-b']))
+})
+
+test('ReportService persists official messages and price history while isolating a failed source', async () => {
+  const previousPrice = normalizePriceObservation({
+    vendor: 'OpenAI', product: 'ChatGPT', plan: 'Plus', region: 'US', currency: 'USD', amountMinor: 1_500,
+    billingPeriod: 'month', unit: 'user', taxMode: 'unknown', observedAt: '2026-08-30T10:00:00.000Z', lastVerifiedAt: '2026-08-30T10:00:00.000Z',
+    sourceUrl: 'https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus', sourceKey: 'openai-chatgpt-plus-usd', publisherId: 'openai', trustTier: 'primary',
+  })
+  const state = {
+    sources: [
+      { id: 'configured-feed', kind: 'OfficialFeed', name: 'Runtime name', section: 'ai', enabled: true, config: { catalogId: 'openai-news', url: 'http://127.0.0.1/private' } },
+      { id: 'configured-price', kind: 'OfficialPricing', name: 'Runtime price', section: 'ai', enabled: true, config: { catalogId: 'openai-chatgpt-plus-usd' } },
+      { id: 'configured-failure', kind: 'OfficialFeed', name: 'Runtime failure', section: 'ai', enabled: true, config: { catalogId: 'ollama-releases' } },
+    ],
+    reports: [{ date: '2026-08-30', generatedAt: '2026-08-30T12:00:00.000Z', topics: [], sourceRuns: [], priceSnapshots: [previousPrice] }],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const pricing = await readFile(new URL('./fixtures/official/pricing-us.html', import.meta.url), 'utf8')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const requested = String(url)
+    if (requested === 'https://openai.com/news/rss.xml') return new Response(`<?xml version="1.0"?><rss><channel><item><guid>release-1</guid><title>New model tools</title><description>Official update.</description><link>https://openai.com/index/new-model-tools/</link><pubDate>Mon, 31 Aug 2026 12:00:00 GMT</pubDate></item></channel></rss>`)
+    if (requested.includes('6950777')) return new Response(pricing)
+    return new Response('TOKEN=do-not-leak response body', { status: 503, statusText: 'secret upstream failure' })
+  }
+  try {
+    const report = await new ReportService(store, {}).generate('2026-08-31', true)
+    assert.equal(report.priceSnapshots.length, 2)
+    assert.deepEqual(report.priceSnapshots.map((item) => item.amountMinor), [2_000, 1_500])
+    assert.equal(state.reports[0], report)
+    assert.equal(report.sourceRuns.length, 3)
+
+    const feedRun = report.sourceRuns.find((run) => run.sourceId === 'configured-feed')
+    assert.equal(feedRun.source, 'OpenAI News')
+    assert.equal(feedRun.kind, 'OfficialFeed')
+    assert.equal(feedRun.ok, true)
+    assert.equal(feedRun.status, 'ok')
+    assert.equal(feedRun.count, 1)
+    assert.deepEqual(feedRun.warnings, [])
+    assert.ok(Number.isFinite(Date.parse(feedRun.checkedAt)))
+
+    const failure = report.sourceRuns.find((run) => run.sourceId === 'configured-failure')
+    assert.equal(failure.ok, false)
+    assert.equal(failure.status, 'error')
+    assert.equal(failure.count, 0)
+    assert.doesNotMatch(failure.error, /token|secret|response body|https?:/i)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('ReportService marks useful official results with parser warnings as partial', async () => {
+  const state = {
+    sources: [{ id: 'price-source', kind: 'OfficialPricing', name: 'Runtime price', section: 'ai', enabled: true, config: { catalogId: 'openai-chatgpt-plus-usd' } }],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {})
+  reports.adapters.OfficialPricing = {
+    fetchSince: async () => ({
+      source: getOfficialSource('openai-chatgpt-plus-usd'),
+      messages: [],
+      observations: [normalizePriceObservation({
+        vendor: 'OpenAI', product: 'ChatGPT', plan: 'Plus', region: 'US', currency: 'USD', amountMinor: 2_000,
+        billingPeriod: 'month', unit: 'user', taxMode: 'unknown', observedAt: '2026-08-31T10:00:00.000Z', lastVerifiedAt: '2026-08-31T10:00:00.000Z',
+        sourceUrl: 'https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus', sourceKey: 'openai-chatgpt-plus-usd', publisherId: 'openai', trustTier: 'primary',
+      })],
+      warnings: ['Missing required plan: Pro'],
+    }),
+  }
+
+  const report = await reports.generate('2026-08-31', true)
+  assert.deepEqual(report.sourceRuns[0], {
+    sourceId: 'price-source', source: 'ChatGPT Plus USD pricing', kind: 'OfficialPricing', ok: true, status: 'partial', count: 1,
+    checkedAt: report.sourceRuns[0].checkedAt, warnings: ['Missing required plan: Pro'],
+  })
+})
+
+test('ReportService safely merges allowlisted OFFICIAL_SOURCES without duplicate catalog runs', async () => {
+  const state = {
+    sources: [
+      { id: 'stored-openai', kind: 'OfficialFeed', name: 'Stored OpenAI', section: 'ai', enabled: true, config: { catalogId: 'openai-news' } },
+      { id: 'community', kind: 'Reddit', name: 'LocalLLaMA', section: 'ai', enabled: true, config: { subreddit: 'LocalLLaMA' } },
+    ],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {
+    OFFICIAL_SOURCES: JSON.stringify([
+      ' openai-news ',
+      'ollama-releases',
+      'ollama-releases',
+      'not-in-catalog',
+      { catalogId: 'openai-chatgpt-plus-usd', url: 'http://127.0.0.1/private', headers: { cookie: 'must-not-persist' } },
+    ]),
+  })
+  const fetched = []
+  reports.adapters.Reddit = { fetchSince: async () => [] }
+  reports.adapters.OfficialFeed = {
+    fetchSince: async (source) => {
+      fetched.push(source)
+      return { source: getOfficialSource(source.config.catalogId), messages: [], observations: [], warnings: [] }
+    },
+    health: () => ({ ok: true, message: 'Allowlisted' }),
+  }
+
+  const report = await reports.generate('2026-08-31', true)
+
+  assert.deepEqual(fetched.map((source) => source.config.catalogId), ['openai-news', 'ollama-releases'])
+  assert.equal(report.sourceRuns.filter((run) => run.kind === 'OfficialFeed').length, 2)
+  const envSource = fetched.find((source) => source.config.catalogId === 'ollama-releases')
+  assert.deepEqual(envSource, {
+    id: 'ollama-releases', kind: 'OfficialFeed', name: 'Ollama releases', detail: 'Ollama', section: 'ai', enabled: true,
+    config: { catalogId: 'ollama-releases' },
+  })
+  assert.equal(Object.hasOwn(envSource, 'url'), false)
+  assert.equal(Object.hasOwn(envSource.config, 'headers'), false)
+})
+
+test('ReportService source listing uses the same env merge and respects stored disable overrides', () => {
+  const stateSources = [
+    { id: 'disabled-openai', kind: 'OfficialFeed', name: 'Stored OpenAI', section: 'ai', enabled: false, config: { catalogId: 'openai-news' } },
+    { id: 'community', kind: 'Reddit', name: 'LocalLLaMA', section: 'ai', enabled: true, config: { subreddit: 'LocalLLaMA' } },
+  ]
+  const reports = new ReportService({ read: async () => ({}), update: async (value) => value }, {
+    OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'ollama-releases']),
+  })
+
+  assert.equal(typeof reports.configuredSources, 'function')
+  if (typeof reports.configuredSources !== 'function') return
+  const listed = reports.configuredSources(stateSources)
+  assert.deepEqual(listed.map((source) => source.id), ['disabled-openai', 'community', 'ollama-releases'])
+  assert.equal(listed.filter((source) => source.config?.catalogId === 'openai-news').length, 1)
+})
+
+test('ReportService ignores malformed OFFICIAL_SOURCES without affecting stored community sources', async () => {
+  const state = {
+    sources: [{ id: 'community', kind: 'Reddit', name: 'LocalLLaMA', section: 'ai', enabled: true, config: { subreddit: 'LocalLLaMA' } }],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, { OFFICIAL_SOURCES: '{invalid json' })
+  let communityCalls = 0
+  reports.adapters.Reddit = { fetchSince: async () => { communityCalls += 1; return [] } }
+
+  const report = await reports.generate('2026-08-31', true)
+
+  assert.equal(communityCalls, 1)
+  assert.deepEqual(report.sourceRuns.map((run) => run.sourceId), ['community'])
+})
+
+test('ReportService redacts credential key-values before persisting source-run errors', async () => {
+  const state = {
+    sources: [
+      { id: 'password-source', kind: 'Reddit', name: 'Password source', section: 'ai', enabled: true, config: { subreddit: 'one' } },
+      { id: 'passwd-source', kind: 'Reddit', name: 'Passwd source', section: 'ai', enabled: true, config: { subreddit: 'two' } },
+      { id: 'session-source', kind: 'Reddit', name: 'Session source', section: 'ai', enabled: true, config: { subreddit: 'three' } },
+      { id: 'cookie-source', kind: 'Reddit', name: 'Cookie source', section: 'ai', enabled: true, config: { subreddit: 'four' } },
+    ],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {})
+  reports.adapters.Reddit = {
+    fetchSince: async (source) => {
+      const errors = {
+        'password-source': 'upstream password=fake-password detail',
+        'passwd-source': 'upstream passwd: fake-passwd detail',
+        'session-source': 'upstream session_id=fake-session detail',
+        'cookie-source': 'upstream cookie: first=fake-cookie; second=fake-other detail',
+      }
+      throw new Error(errors[source.id])
+    },
+  }
+
+  const report = await reports.generate('2026-08-31', true)
+  const serialized = JSON.stringify(report.sourceRuns)
+
+  assert.doesNotMatch(serialized, /fake-password|fake-passwd|fake-session|fake-cookie|fake-other/)
+  assert.equal(state.reports[0], report)
+  assert.deepEqual(report.sourceRuns.map((run) => run.error), [
+    'Source error details redacted',
+    'Source error details redacted',
+    'Source error details redacted',
+    'Source error details redacted',
+  ])
+})
+
+test('ReportService promotes a recurring multi-day community pattern from prior compact history', async () => {
+  const previousTopic = {
+    id: 'ai-1-local-model-memory-usage',
+    section: 'ai',
+    title: 'Local model memory usage',
+    summary: 'A prior observation.',
+    evidence: [{ source: 'Reddit', label: 'alpha', author: 'alice', excerpt: 'Local model memory usage improves across long context sessions', time: '2026-08-30T08:00:00.000Z', url: 'https://example.test/old', independenceKey: 'publisher-a', publisherId: 'publisher-a', trustTier: 'community', contentHash: 'old-observation' }],
+  }
+  const previousHistory = updateTopicHistory([], [previousTopic], { now: new Date('2026-08-30T12:00:00.000Z'), reportDate: '2026-08-30' })
+  const state = {
+    sources: [
+      { id: 'source-a', kind: 'Reddit', name: 'alpha', section: 'ai', enabled: true, config: { independenceKey: 'publisher-a' } },
+      { id: 'source-b', kind: 'Reddit', name: 'beta', section: 'ai', enabled: true, config: { independenceKey: 'publisher-b' } },
+    ],
+    reports: [{ date: '2026-08-30', generatedAt: '2026-08-30T12:00:00.000Z', topics: [], topicHistory: previousHistory }],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {}, () => new Date('2026-08-31T12:00:00.000Z'))
+  reports.adapters.Reddit = {
+    fetchSince: async (source) => [{
+      id: source.id,
+      source: 'Reddit',
+      sourceId: source.name,
+      author: source.name === 'alpha' ? 'bob' : 'carol',
+      text: source.name === 'alpha' ? 'Local model memory usage improves across long context workloads' : 'Local model memory usage improves for long context sessions',
+      url: `https://example.test/${source.id}`,
+      publishedAt: '2026-08-31T08:00:00.000Z',
+      engagement: {},
+    }],
+  }
+
+  const report = await reports.generate('2026-08-31', true)
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].contentType, 'community_opinion')
+  assert.equal(report.topics[0].status, 'confirmed')
+  assert.deepEqual(report.topics[0].recurrence, {
+    authorCount: 3,
+    publisherCount: 2,
+    mentionCount: 3,
+    firstSeenAt: '2026-08-30T12:00:00.000Z',
+    lastSeenAt: '2026-08-31T12:00:00.000Z',
+    windowHours: 24,
+  })
+  assert.equal(report.topicHistory.length, 3)
+})
+
+test('ReportService retains single-source legacy evidence in history without publishing it', async () => {
+  const state = {
+    sources: [{ id: 'source-a', kind: 'Reddit', name: 'alpha', section: 'ai', enabled: true, config: { independenceKey: 'publisher-a' } }],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {}, () => new Date('2026-08-31T12:00:00.000Z'))
+  reports.adapters.Reddit = {
+    fetchSince: async () => [{ id: 'single', source: 'Reddit', sourceId: 'alpha', author: 'alice', text: 'Local inference memory pressure observation', url: 'https://example.test/single', publishedAt: '2026-08-31T08:00:00.000Z', engagement: {} }],
+  }
+  const report = await reports.generate('2026-08-31', true)
+  assert.equal(report.topics.length, 0)
+  assert.equal(report.topicHistory.length, 1)
+})
+
+test('ReportService publishes a single official release only as reported', async () => {
+  const state = {
+    sources: [{ id: 'official-release', kind: 'OfficialFeed', name: 'Vendor releases', section: 'ai', enabled: true, trustTier: 'maintainer', config: { independenceKey: 'vendor' } }],
+    reports: [],
+    settings: { telegramEnabled: false },
+  }
+  const store = { read: async () => state, update: async (change) => change(state) }
+  const reports = new ReportService(store, {}, () => new Date('2026-08-31T12:00:00.000Z'))
+  reports.adapters.OfficialFeed = {
+    fetchSince: async () => [{ id: 'release', source: 'OfficialFeed', sourceId: 'Vendor releases', author: 'vendor', text: 'Introducing Vendor Model v2 release notes', url: 'https://vendor.example/releases/v2', publishedAt: '2026-08-31T08:00:00.000Z', engagement: {} }],
+  }
+  const report = await reports.generate('2026-08-31', true)
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].contentType, 'product_update')
+  assert.equal(report.topics[0].status, 'reported')
 })

@@ -1,4 +1,8 @@
-import { annotateMessage, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { annotateMessage, BRIEFING_CONTENT_TYPES, CLAIM_STATUSES, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { getOfficialSource, OFFICIAL_SOURCE_KINDS } from '../shared/official-source-catalog.mjs'
+import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
+import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
+import { dedupeNearDuplicates, enrichTopicsWithHistory, isReportableTopic, topicHistoryFromReports } from '../shared/briefing-quality.mjs'
 
 interface Env {
   REPORTS: KVNamespace
@@ -11,9 +15,10 @@ interface Env {
   REPORT_IMPORT_TOKEN?: string
   AI_SOURCES?: string
   TELEGRAM_SOURCES?: string
+  OFFICIAL_SOURCES?: string
 }
 
-type Message = { source: string; sourceId: string; externalId?: string; sourceKey?: string; publisherId?: string; independenceKey?: string; trustTier?: string; canonicalUrl?: string; contentHash?: string; text: string; url: string; publishedAt: string; engagement: number }
+type Message = { source: string; sourceId: string; externalId?: string; sourceKey?: string; publisherId?: string; independenceKey?: string; trustTier?: string; canonicalUrl?: string; contentHash?: string; author?: string; priceKeys?: string[]; text: string; url: string; publishedAt: string; engagement: number }
 type TopicCluster = { terms: Set<string>; posts: Message[]; postTerms: Array<{ sourceId: string; independenceKey: string; terms: string[] }> }
 type TelegramResponse = { result?: any[] }
 type RedditResponse = { data?: { children?: Array<{ data: any }> } }
@@ -57,62 +62,129 @@ async function runFallbackCrawl(env: Env) {
 }
 
 async function crawl(env: Env, useOpenAI = true) {
-  const statuses: Array<{ source: string; ok: boolean; count: number; error?: string }> = []
+  const now = new Date()
+  const previous = await readLatestReport(env)
+  const latest = previous
+  const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(now)
+  const statuses: Array<{ sourceId: string; source: string; kind: string; ok: boolean; status: 'ok' | 'partial' | 'error'; count: number; checkedAt: string; warnings: string[]; error?: string }> = []
   const messages: Message[] = []
-  const sources = parseSources(env.AI_SOURCES, env.TELEGRAM_SOURCES)
+  const observations: any[] = []
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const sources = parseSources(env.AI_SOURCES, env.TELEGRAM_SOURCES, env.OFFICIAL_SOURCES)
   for (const configuredSource of sources) {
     const source = normalizeSourceDefinition(configuredSource)
     try {
-      const fetched = (await fetchSource(source, env)).map((item) => annotateMessage(item, source))
-      const last24Hours = fetched.filter((message) => Date.parse(message.publishedAt) >= Date.now() - 24 * 60 * 60 * 1000)
+      const fetched = await fetchSource(source, env, since)
+      const result = Array.isArray(fetched) ? { messages: fetched, observations: [], warnings: [] } : fetched
+      const sourceDefinition = normalizeSourceDefinition(result.source || source)
+      const normalizedMessages = (Array.isArray(result.messages) ? result.messages : []).map((item: any) => annotateMessage({ ...item, id: item.id || item.externalId, engagement: typeof item.engagement === 'number' ? item.engagement : 0 }, sourceDefinition))
+      const last24Hours = normalizedMessages.filter((message: Message) => Date.parse(message.publishedAt) >= now.getTime() - 24 * 60 * 60 * 1000)
+      const prices = Array.isArray(result.observations) ? result.observations : []
+      const warnings = Array.isArray(result.warnings) ? result.warnings.map(sanitizeSourceMessage) : []
       messages.push(...last24Hours)
-      statuses.push({ source: source.name, ok: true, count: last24Hours.length })
+      observations.push(...prices)
+      statuses.push(workerSourceRun(source, { catalogSource: result.source, count: last24Hours.length + prices.length, warnings }))
     } catch (error) {
-      statuses.push({ source: source.name, ok: false, count: 0, error: error instanceof Error ? error.message : 'Unknown error' })
+      statuses.push(workerSourceRun(source, { error }))
     }
   }
-  let topics = buildTopics(messages)
+  const priceSnapshots = mergePriceSnapshots(previous?.priceSnapshots || [], observations)
+  const quality = buildTopicsWithHistory(messages, {
+    now,
+    reportDate,
+    topicHistory: topicHistoryFromReports(latest ? [latest] : [], { now }),
+    priceSnapshots,
+  })
+  let topics = quality.topics
   if (useOpenAI && env.OPENAI_API_KEY && topics.length) {
-    try { topics = applyModelSummaries(topics, await summarizeWithOpenAI(topics, env)) } catch (error) { statuses.push({ source: 'OpenAI summarization', ok: false, count: 0, error: error instanceof Error ? error.message : 'Unknown error' }) }
+    try { topics = applyModelSummaries(topics, await summarizeWithOpenAI(topics, env)) } catch (error) { statuses.push(workerSourceRun({ id: 'openai-summarization', name: 'OpenAI summarization', kind: 'Summary' }, { error })) }
   }
-  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date()), generatedAt: new Date().toISOString(), topics, sourceRuns: statuses, summaryProvider: useOpenAI && env.OPENAI_API_KEY && !statuses.some((run) => run.source === 'OpenAI summarization' && !run.ok) ? 'openai' : 'deterministic' }
+  const report = { date: reportDate, generatedAt: now.toISOString(), topics, topicHistory: quality.topicHistory, sourceRuns: statuses, priceSnapshots, summaryProvider: useOpenAI && env.OPENAI_API_KEY && !statuses.some((run) => run.source === 'OpenAI summarization' && !run.ok) ? 'openai' : 'deterministic' }
   await env.REPORTS.put('latest', JSON.stringify(report), { expirationTtl: 60 * 60 * 24 * 90 })
   return report
 }
 
-function parseSources(raw?: string, telegramRaw?: string) {
-  try {
-    const parsed = raw ? JSON.parse(raw) : []
-    const telegram = telegramRaw ? JSON.parse(telegramRaw) : []
-    const all = [...(Array.isArray(parsed) ? parsed : []), ...(Array.isArray(telegram) ? telegram : [])]
-    return all.filter((source) => ['Telegram', 'Reddit', 'X', 'Threads'].includes(source.kind) && source.enabled !== false)
-  } catch { return [] }
+function parseSources(raw?: string, telegramRaw?: string, officialRaw?: string) {
+  const parsed = parseArray(raw)
+  const telegram = parseArray(telegramRaw)
+  const official = parseArray(officialRaw).flatMap((catalogId) => {
+    if (typeof catalogId !== 'string' || !catalogId.trim()) return []
+    try {
+      const source = getOfficialSource(catalogId)
+      return [{ id: source.id, kind: source.kind, name: source.name, section: 'ai', enabled: true, config: { catalogId: source.id } }]
+    } catch {
+      const id = catalogId.trim().toLowerCase()
+      return [{ id, kind: 'OfficialFeed', name: id, section: 'ai', enabled: true, config: { catalogId: id } }]
+    }
+  })
+  return [...parsed, ...telegram, ...official].filter((source) => ['Telegram', 'Reddit', 'X', 'Threads', ...OFFICIAL_SOURCE_KINDS].includes(source.kind) && source.enabled !== false)
 }
 
-async function fetchSource(source: any, env: Env): Promise<Message[]> {
+async function fetchSource(source: any, env: Env, since: string): Promise<any> {
+  if (OFFICIAL_SOURCE_KINDS.includes(source.kind)) return collectOfficialSource(source, { since })
   if (source.kind === 'Telegram') {
     try { return await fetchTelegramPublicChannel(source) } catch (publicError) {
       if (!env.TELEGRAM_BOT_TOKEN) throw publicError
     }
     const response = await request<TelegramResponse>(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates?limit=100&timeout=0`)
     const chatId = String(source.config?.chatId || source.detail || '')
-    return (response.result || []).map((update: any) => update.channel_post || update.message).filter(Boolean).filter((post: any) => String(post.chat?.id) === chatId || `@${post.chat?.username || ''}`.toLowerCase() === chatId.toLowerCase()).map((post: any) => ({ externalId: String(post.message_id), source: 'Telegram', sourceId: source.name, text: post.text || post.caption || '', url: post.chat?.username ? `https://t.me/${post.chat.username}/${post.message_id}` : '', publishedAt: new Date(post.date * 1000).toISOString(), engagement: 0 })).filter((post: Message) => post.text)
+    return (response.result || []).map((update: any) => update.channel_post || update.message).filter(Boolean).filter((post: any) => String(post.chat?.id) === chatId || `@${post.chat?.username || ''}`.toLowerCase() === chatId.toLowerCase()).map((post: any) => ({ externalId: String(post.message_id), source: 'Telegram', sourceId: source.name, author: post.author_signature || post.from?.username || post.chat?.username || source.name, text: post.text || post.caption || '', url: post.chat?.username ? `https://t.me/${post.chat.username}/${post.message_id}` : '', publishedAt: new Date(post.date * 1000).toISOString(), engagement: 0 })).filter((post: Message) => post.text)
   }
   if (source.kind === 'Reddit') {
     const subreddit = source.config?.subreddit || source.name
     const response = await request<RedditResponse>(`https://www.reddit.com/r/${encodeURIComponent(subreddit)}/hot.json?limit=50`, { headers: { 'User-Agent': 'signalroom-cloudflare/1.0' } })
-    return (response.data?.children || []).map(({ data }: any) => ({ externalId: data.name, source: 'Reddit', sourceId: `r/${subreddit}`, text: `${data.title}. ${data.selftext || ''}`, url: `https://reddit.com${data.permalink}`, publishedAt: new Date(data.created_utc * 1000).toISOString(), engagement: data.score || 0 }))
+    return (response.data?.children || []).map(({ data }: any) => ({ externalId: data.name, source: 'Reddit', sourceId: `r/${subreddit}`, author: data.author || `r/${subreddit}`, text: `${data.title}. ${data.selftext || ''}`, url: `https://reddit.com${data.permalink}`, publishedAt: new Date(data.created_utc * 1000).toISOString(), engagement: data.score || 0 }))
   }
   if (source.kind === 'X') {
     if (!env.X_BEARER_TOKEN) throw new Error('X_BEARER_TOKEN missing')
-    const params = new URLSearchParams({ query: source.config?.query || source.detail, max_results: '50', 'tweet.fields': 'created_at,public_metrics' })
+    const params = new URLSearchParams({ query: source.config?.query || source.detail, max_results: '50', 'tweet.fields': 'created_at,public_metrics,author_id' })
     const response = await request<SocialResponse>(`https://api.x.com/2/tweets/search/recent?${params}`, { headers: { Authorization: `Bearer ${env.X_BEARER_TOKEN}` } })
-    return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'X', sourceId: source.name, text: post.text, url: `https://x.com/i/status/${post.id}`, publishedAt: post.created_at, engagement: post.public_metrics?.like_count || 0 }))
+    return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'X', sourceId: source.name, author: post.author_id || source.name, text: post.text, url: `https://x.com/i/status/${post.id}`, publishedAt: post.created_at, engagement: post.public_metrics?.like_count || 0 }))
   }
   if (!env.THREADS_ACCESS_TOKEN || !source.config?.userId) throw new Error('Threads access token or userId missing')
   const params = new URLSearchParams({ fields: 'id,text,timestamp,permalink,username', access_token: env.THREADS_ACCESS_TOKEN, limit: '50' })
   const response = await request<SocialResponse>(`https://graph.threads.net/v1.0/${encodeURIComponent(source.config.userId)}/threads?${params}`)
-  return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'Threads', sourceId: source.name, text: post.text, url: post.permalink, publishedAt: post.timestamp, engagement: 0 }))
+  return (response.data || []).map((post: any) => ({ externalId: post.id, source: 'Threads', sourceId: source.name, author: post.username || source.name, text: post.text, url: post.permalink, publishedAt: post.timestamp, engagement: 0 }))
+}
+
+async function readLatestReport(env: Env) {
+  try {
+    const value = await env.REPORTS.get<any>('latest', 'json')
+    if (typeof value === 'string') return JSON.parse(value)
+    return value && typeof value === 'object' ? value : null
+  } catch {
+    return null
+  }
+}
+
+function parseArray(value?: string) {
+  if (!value) return []
+  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+}
+
+function workerSourceRun(source: any, { catalogSource, count = 0, warnings = [], error }: { catalogSource?: any; count?: number; warnings?: string[]; error?: unknown } = {}) {
+  const failed = error !== undefined
+  return {
+    sourceId: String(source.id || source.sourceKey || source.name || 'unknown-source'),
+    source: String(catalogSource?.name || source.name || source.id || 'Unknown source'),
+    kind: String(source.kind || catalogSource?.kind || 'Unknown'),
+    ok: !failed,
+    status: failed ? 'error' as const : warnings.length ? 'partial' as const : 'ok' as const,
+    count: failed ? 0 : count,
+    checkedAt: new Date().toISOString(),
+    warnings: failed ? [] : warnings,
+    ...(failed ? { error: sanitizeSourceMessage(error) } : {}),
+  }
+}
+
+function sanitizeSourceMessage(value: unknown) {
+  const message = value instanceof Error ? value.message : String(value || 'Unknown error')
+  return message
+    .replace(/https?:\/\/[^\s)\]}]+/gi, '[redacted-url]')
+    .replace(/\b(bearer)\s+\S+/gi, '$1 [redacted]')
+    .replace(/\b(authorization|cookie|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi, '$1=[redacted]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 240)
 }
 
 async function fetchTelegramPublicChannel(source: any): Promise<Message[]> {
@@ -134,7 +206,7 @@ async function fetchTelegramPublicChannel(source: any): Promise<Message[]> {
     const text = decodeTelegramHtml(textMatch[1])
     if (!text) continue
     const viewMatch = block.match(/tgme_widget_message_views">([\d.,KMB]+)/)
-    posts.push({ externalId: messageId, source: 'Telegram', sourceId: source.name, text, url: `https://t.me/${channel}/${messageId}`, publishedAt: dateMatch[1], engagement: parseTelegramViews(viewMatch?.[1]) })
+    posts.push({ externalId: messageId, source: 'Telegram', sourceId: source.name, author: source.name, text, url: `https://t.me/${channel}/${messageId}`, publishedAt: dateMatch[1], engagement: parseTelegramViews(viewMatch?.[1]) })
   }
   return posts
 }
@@ -150,8 +222,27 @@ function parseTelegramViews(value?: string) {
   return Number.isFinite(numeric) ? Math.round(numeric * multiplier) : 0
 }
 
-export function buildTopics(messages: Message[]) {
-  const deduped = dedupeWithinSources(messages)
+type TopicBuildOptions = { now?: Date | string | number; reportDate?: string; topicHistory?: any[]; priceSnapshots?: any[] }
+
+export function buildTopics(messages: Message[], options: TopicBuildOptions = {}) {
+  return buildTopicsWithHistory(messages, options).topics
+}
+
+export function buildTopicsWithHistory(messages: Message[], options: TopicBuildOptions = {}) {
+  const now = workerDate(options.now)
+  const reportDate = /^\d{4}-\d{2}-\d{2}$/.test(options.reportDate || '')
+    ? String(options.reportDate)
+    : new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(now)
+  const candidates = buildCandidateTopics(messages)
+  const enriched = enrichTopicsWithHistory(candidates, Array.isArray(options.topicHistory) ? options.topicHistory : [], { now, reportDate, priceSnapshots: options.priceSnapshots })
+  return {
+    topics: enriched.topics.filter(isReportableTopic).map((topic: any, index: number) => ({ ...topic, rank: index + 1 })),
+    topicHistory: enriched.topicHistory,
+  }
+}
+
+function buildCandidateTopics(messages: Message[]) {
+  const deduped = dedupeNearDuplicates(messages) as Message[]
   const clusters: TopicCluster[] = []
   for (const post of deduped.sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))) {
     const terms = topicTerms(post.text)
@@ -177,7 +268,7 @@ export function buildTopics(messages: Message[]) {
     } else clusters.push({ terms: new Set(terms), posts: [post], postTerms: [{ sourceId: post.sourceId, independenceKey: independentKey(post), terms }] })
   }
 
-  return clusters.filter((cluster) => countIndependentCorroboration(cluster.posts) >= 2).map((cluster) => {
+  return clusters.map((cluster) => {
     const sources = [...new Set(cluster.posts.map((post) => post.sourceId))]
     const engagement = cluster.posts.reduce((sum, post) => sum + post.engagement, 0)
     const newest = Math.max(...cluster.posts.map((post) => Date.parse(post.publishedAt)))
@@ -185,6 +276,7 @@ export function buildTopics(messages: Message[]) {
     const score = sourceCount * 10_000 + cluster.posts.length * 100 + Math.log10(engagement + 1) * 10 + newest / 1e13
     const term = strongestTerm(cluster)
     const section = cluster.posts.every((post) => post.source === 'Telegram') ? 'crypto' : 'ai'
+    const priceKeys = [...new Set(cluster.posts.flatMap((post) => Array.isArray(post.priceKeys) ? post.priceKeys : []).filter(Boolean))]
     return {
       id: `${section}-${slug(term)}-${newest}`,
       rank: 0,
@@ -193,8 +285,9 @@ export function buildTopics(messages: Message[]) {
       summary: cluster.posts.slice(0, 3).map((post) => post.text).join(' ').slice(0, 500),
       signal: `${cluster.posts.length} posts across ${sourceCount} independent source${sourceCount === 1 ? '' : 's'}`,
       sources,
-      confidence: sourceCount >= 3 ? 'High confidence' : 'Mixed signal',
+      confidence: sourceCount >= 3 ? 'High confidence' : sourceCount === 2 ? 'Mixed signal' : 'Early signal',
       evidence: selectEvidence(cluster.posts),
+      ...(priceKeys.length ? { priceKeys } : {}),
       score,
     }
   }).sort((a, b) => b.score - a.score).map(({ score: _score, ...topic }, index) => ({ ...topic, rank: index + 1 }))
@@ -222,17 +315,7 @@ function strongestTerm(cluster: { terms: Set<string>; posts: Message[] }) {
   return strongest.replace(/^asset:/, '')
 }
 function selectEvidence(posts: Message[], limit = 6) {
-  return selectCorroboratingEvidence(posts, limit).map((post: Message) => ({ source: post.source, label: post.sourceId, author: post.sourceId, excerpt: post.text.slice(0, 500), time: relativeTime(post.publishedAt), url: post.url, sourceKey: post.sourceKey, publisherId: post.publisherId, independenceKey: independentKey(post), trustTier: post.trustTier, contentHash: post.contentHash }))
-}
-function dedupeWithinSources(messages: Message[]) {
-  const seen = new Set<string>()
-  return messages.filter((message) => {
-    const normalized = message.text.toLowerCase().replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim()
-    const key = `${message.sourceKey || `${message.source}:${message.sourceId}`}:${message.contentHash || normalized}`
-    if (!normalized || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  return selectCorroboratingEvidence(posts, limit).map((post: Message) => ({ source: post.source, label: post.sourceId, author: post.author || post.sourceId, excerpt: post.text.slice(0, 500), time: relativeTime(post.publishedAt), publishedAt: post.publishedAt, url: post.url, sourceKey: post.sourceKey, publisherId: post.publisherId, independenceKey: independentKey(post), trustTier: post.trustTier, contentHash: post.contentHash }))
 }
 function relativeTime(value: string) {
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(value)) / 60_000))
@@ -242,9 +325,15 @@ function relativeTime(value: string) {
 }
 function slug(value: string) { return value.toLowerCase().replace(/[^a-z0-9가-힣]+/gu, '-').replace(/^-|-$/g, '').slice(0, 40) || 'topic' }
 
+function workerDate(value?: Date | string | number) {
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value ?? Date.now())
+  return Number.isFinite(date.getTime()) ? date : new Date()
+}
+
 export function normalizeReport(report: any) {
-  const topics = (Array.isArray(report?.topics) ? report.topics : []).map(normalizeTopic).filter((topic: any) => topic.independentSourceCount >= 2).map((topic: any, index: number) => ({ ...topic, rank: index + 1 }))
-  return { ...report, topics, sourceRuns: Array.isArray(report?.sourceRuns) ? report.sourceRuns : [] }
+  const topics = (Array.isArray(report?.topics) ? report.topics : []).map(normalizeTopic).filter(isReportableTopic).map((topic: any, index: number) => ({ ...topic, rank: index + 1 }))
+  const topicHistory = topicHistoryFromReports([report], { now: report?.generatedAt || Date.now() })
+  return { ...report, topics, ...(Array.isArray(report?.topicHistory) || topicHistory.length ? { topicHistory } : {}), sourceRuns: Array.isArray(report?.sourceRuns) ? report.sourceRuns : [] }
 }
 
 function normalizeTopic(topic: any, index = 0) {
@@ -254,16 +343,39 @@ function normalizeTopic(topic: any, index = 0) {
     author: item.author || item.sourceId || 'Unknown author',
     excerpt: item.excerpt || item.text || '',
     time: item.time || relativeTime(item.publishedAt || new Date().toISOString()),
+    publishedAt: validIsoDate(item.publishedAt) ? item.publishedAt : validIsoDate(item.time) ? item.time : undefined,
     url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: item.trustTier || 'community', contentHash: item.contentHash,
   })).filter((item: any) => item.excerpt || item.url) : []
   const sources = [...new Set(evidence.map((item: any) => item.label).filter((label: string) => label && label !== 'Unknown source'))]
   const independentSourceCount = countIndependentCorroboration(evidence)
-  return { ...topic, id: topic?.id || `topic-${index + 1}`, rank: Number(topic?.rank || index + 1), sources, independentSourceCount, evidence }
+  const normalized = { ...topic, id: topic?.id || `topic-${index + 1}`, rank: Number(topic?.rank || index + 1), sources, independentSourceCount, evidence }
+  if (!BRIEFING_CONTENT_TYPES.includes(normalized.contentType)) delete normalized.contentType
+  if (!CLAIM_STATUSES.includes(normalized.status)) delete normalized.status
+  if (!['fresh', 'aging', 'stale'].includes(normalized.freshness)) delete normalized.freshness
+  if (!validIsoDate(normalized.lastVerifiedAt)) delete normalized.lastVerifiedAt
+  if (Array.isArray(normalized.priceKeys)) normalized.priceKeys = [...new Set(normalized.priceKeys.filter((key: unknown) => typeof key === 'string' && key.trim()).map((key: string) => key.trim()))]
+  else delete normalized.priceKeys
+  const recurrence = normalizeRecurrence(normalized.recurrence)
+  if (recurrence) normalized.recurrence = recurrence
+  else delete normalized.recurrence
+  return normalized
+}
+
+function normalizeRecurrence(value: any) {
+  if (!value) return null
+  const counts = ['authorCount', 'publisherCount', 'mentionCount'].map((key) => Number(value[key]))
+  const windowHours = Number(value.windowHours)
+  if (counts.some((count) => !Number.isInteger(count) || count < 0) || !Number.isFinite(windowHours) || windowHours < 0 || !validIsoDate(value.firstSeenAt) || !validIsoDate(value.lastSeenAt)) return null
+  return { authorCount: counts[0], publisherCount: counts[1], mentionCount: counts[2], firstSeenAt: value.firstSeenAt, lastSeenAt: value.lastSeenAt, windowHours }
+}
+
+function validIsoDate(value: unknown) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value))
 }
 
 function independentKey(post: Pick<Message, 'source' | 'sourceId' | 'sourceKey' | 'publisherId' | 'independenceKey'>) { return independenceKeyFor(post) }
 
-function applyModelSummaries(topics: any[], modelTopics: any[]) {
+export function applyModelSummaries(topics: any[], modelTopics: any[]) {
   const summaries = new Map(modelTopics.filter((topic: any) => topic && typeof topic.id === 'string').map((topic: any) => [topic.id, topic]))
   return topics.map((topic) => {
     const modelTopic = summaries.get(topic.id)

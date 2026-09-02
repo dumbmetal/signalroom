@@ -1,7 +1,9 @@
-import type { Source, SourceKind } from './types'
+// @ts-expect-error Node's built-in TypeScript test runner requires the explicit extension.
+import { normalizeLiveReport } from './briefing-view.ts'
+import type { BriefingReport, Source, SourceKind } from './types'
 
 export interface SettingsState { reportTime: string; timezone: string; telegramEnabled: boolean }
-export interface LiveReport { date: string; generatedAt: string; topics: unknown[]; sourceRuns: Array<{ source: string; ok: boolean; count: number; error?: string }> }
+export type LiveReport = BriefingReport
 
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } })
@@ -21,4 +23,9 @@ export function addSource(input: { kind: SourceKind; name: string; detail: strin
 
 export function loadSettings() { return jsonRequest<SettingsState>('/api/settings') }
 export function saveSettings(settings: SettingsState) { return jsonRequest<SettingsState>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }) }
-export function loadLiveReport() { return jsonRequest<LiveReport>('https://signalroom-crawler.wbvcos.workers.dev/api/report') }
+export async function loadLiveReport() {
+  const raw = await jsonRequest<unknown>('https://signalroom-crawler.wbvcos.workers.dev/api/report')
+  const report = normalizeLiveReport(raw)
+  if (!report) throw new Error('Invalid live report')
+  return report
+}

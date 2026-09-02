@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes from ollama</title>
+  <entry>
+    <id>tag:github.com,2008:Repository/658928958/v0.12.3</id>
+    <updated>2026-08-31T09:30:00Z</updated>
+    <title>Ollama v0.12.3</title>
+    <link rel="alternate" href="https://github.com/ollama/ollama/releases/tag/v0.12.3" />
+    <content type="html">&lt;p&gt;New model support &amp;amp; safer downloads.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/658928958/v0.12.2</id>
+    <updated>2026-08-29T23:59:59Z</updated>
+    <title>Ollama v0.12.2</title>
+    <link rel="alternate" href="https://github.com/ollama/ollama/releases/tag/v0.12.2" />
+    <content type="html">&lt;p&gt;Older release.&lt;/p&gt;</content>
+  </entry>
+</feed>
