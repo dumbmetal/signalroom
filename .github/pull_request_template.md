@@ -6,6 +6,7 @@
 
 - [ ] `pnpm test`
 - [ ] `pnpm build`
+- [ ] `pnpm check:worker`
 - [ ] UI 변경 시 실제 화면 확인
 - [ ] 비밀값·개인 데이터가 diff에 없음
 

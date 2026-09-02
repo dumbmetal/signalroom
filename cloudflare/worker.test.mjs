@@ -42,6 +42,11 @@ test('report normalization keeps URL-only legacy evidence from independent sourc
   assert.equal(report.topics[0].independentSourceCount, 2)
 })
 
+test('manual crawl requires the report import bearer token', async () => {
+  const response = await worker.fetch(new Request('https://example.com/api/crawl', { method: 'POST' }), { REPORTS: {}, REPORT_IMPORT_TOKEN: 'test-token' })
+  assert.equal(response.status, 401)
+})
+
 test('evidence always contains every corroborating channel before extra posts', () => {
   const manyAlpha = Array.from({ length: 7 }, (_, index) => post('alpha', `BTC ETF inflow update ${index}`, 20 - index, index + 1))
   const topics = buildTopics([...manyAlpha, post('beta', 'BTC ETF inflow update confirmed', 10, 99)])
@@ -212,12 +217,13 @@ test('worker crawl propagates configured independence keys into corroborating ev
     return new Response(JSON.stringify({ data: { children: [{ data: { name: alpha ? 'a' : 'b', title: alpha ? 'Model subscription billing changed for teams' : 'Model subscription billing changed for team plans', selftext: '', permalink: alpha ? '/r/alpha/a' : '/r/beta/b', created_utc: now, score: 1 } }] } }))
   }
   try {
-    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST', headers: { Authorization: 'Bearer test-token' } }), {
       REPORTS: { get: async (key) => reports.get(key) || null, put: async (key, value) => reports.set(key, value) },
       AI_SOURCES: JSON.stringify([
         { id: 'source-a', kind: 'Reddit', name: 'alpha', config: { subreddit: 'alpha', independenceKey: ' Vendor-A ' } },
         { id: 'source-b', kind: 'Reddit', name: 'beta', config: { subreddit: 'beta', independenceKey: 'Vendor-B' } },
       ]),
+      REPORT_IMPORT_TOKEN: 'test-token',
     })
     const report = await response.json()
     assert.equal(report.topics.length, 1)
@@ -252,9 +258,10 @@ test('worker collects allowlisted official sources and merges prices with latest
     return new Response('cookie=do-not-leak response body', { status: 503, statusText: 'TOKEN secret' })
   }
   try {
-    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST', headers: { Authorization: 'Bearer test-token' } }), {
       REPORTS: reports,
       OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'openai-chatgpt-plus-usd', 'ollama-releases']),
+      REPORT_IMPORT_TOKEN: 'test-token',
     })
     const report = await response.json()
 
@@ -277,9 +284,10 @@ test('worker preserves inherited prices when the current official pricing source
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response('sensitive body', { status: 502, statusText: 'secret' })
   try {
-    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST', headers: { Authorization: 'Bearer test-token' } }), {
       REPORTS: { get: async () => latest, put: async (_key, value) => { latest = JSON.parse(value) } },
       OFFICIAL_SOURCES: JSON.stringify(['openai-chatgpt-plus-usd']),
+      REPORT_IMPORT_TOKEN: 'test-token',
     })
     const report = await response.json()
 

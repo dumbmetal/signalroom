@@ -29,3 +29,5 @@ jobs:
         run: pnpm test
       - name: Build application
         run: pnpm build
+      - name: Check Cloudflare Worker
+        run: pnpm check:worker
