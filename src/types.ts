@@ -1,5 +1,8 @@
 export type Section = 'crypto' | 'ai'
 export type SourceKind = 'Telegram' | 'Reddit' | 'X' | 'Threads'
+export type BriefingContentType = 'product_update' | 'price_change' | 'discount_offer' | 'setup_tip' | 'community_opinion'
+export type TrustTier = 'primary' | 'maintainer' | 'independent' | 'community'
+export type ClaimStatus = 'confirmed' | 'reported' | 'disputed' | 'expired'
 
 export interface Evidence {
   source: SourceKind
@@ -8,6 +11,11 @@ export interface Evidence {
   excerpt: string
   time: string
   url: string
+  sourceKey?: string
+  publisherId?: string
+  independenceKey?: string
+  trustTier?: TrustTier
+  contentHash?: string
 }
 
 export interface Topic {
@@ -20,6 +28,9 @@ export interface Topic {
   sources: string[]
   confidence: 'High confidence' | 'Mixed signal' | 'Early signal'
   evidence: Evidence[]
+  contentType?: BriefingContentType
+  status?: ClaimStatus
+  freshness?: string
 }
 
 export interface Source {
