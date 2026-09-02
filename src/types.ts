@@ -3,6 +3,16 @@ export type SourceKind = 'Telegram' | 'Reddit' | 'X' | 'Threads'
 export type BriefingContentType = 'product_update' | 'price_change' | 'discount_offer' | 'setup_tip' | 'community_opinion'
 export type TrustTier = 'primary' | 'maintainer' | 'independent' | 'community'
 export type ClaimStatus = 'confirmed' | 'reported' | 'disputed' | 'expired'
+export type Freshness = 'fresh' | 'aging' | 'stale'
+
+export interface Recurrence {
+  authorCount: number
+  publisherCount: number
+  mentionCount: number
+  firstSeenAt: string
+  lastSeenAt: string
+  windowHours: number
+}
 
 export interface Evidence {
   source: SourceKind
@@ -30,7 +40,10 @@ export interface Topic {
   evidence: Evidence[]
   contentType?: BriefingContentType
   status?: ClaimStatus
-  freshness?: string
+  freshness?: Freshness
+  lastVerifiedAt?: string
+  priceKeys?: string[]
+  recurrence?: Recurrence
 }
 
 export interface Source {
