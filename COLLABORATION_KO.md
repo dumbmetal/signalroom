@@ -103,12 +103,15 @@ Codex로도 리뷰할 수 있습니다. 다만 AI 리뷰가 통과해도 사람�
 Codex에게 리뷰 의견을 보여주고 수정한 뒤 다시 push합니다.
 
 ```bash
-git add .
+git add src/App.tsx
+git diff --cached
 git commit -m "fix: address review feedback"
 git push
 ```
 
-그러면 기존 PR에 새 커밋과 변경 내용이 자동으로 나타납니다.
+`src/App.tsx`는 예시입니다. 실제로 바꾼 파일만 넣고, `git diff --cached`로
+커밋 직전 내용을 확인합니다. 그러면 기존 PR에 새 커밋과 변경 내용이
+자동으로 나타납니다.
 
 ### 8. 병합하기
 

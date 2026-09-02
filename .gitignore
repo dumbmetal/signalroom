@@ -1,6 +1,9 @@
 node_modules
 dist
 .env
-.env.local
+.env.*
+!.env.example
+.dev.vars
+.wrangler
 .DS_Store
 data/store.json
