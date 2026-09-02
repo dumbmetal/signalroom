@@ -84,12 +84,13 @@ test('worker crawl propagates configured independence keys into corroborating ev
     return new Response(JSON.stringify({ data: { children: [{ data: { name: alpha ? 'a' : 'b', title: alpha ? 'Model subscription billing changed for teams' : 'Model subscription billing changed for team plans', selftext: '', permalink: alpha ? '/r/alpha/a' : '/r/beta/b', created_utc: now, score: 1 } }] } }))
   }
   try {
-    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST', headers: { Authorization: 'Bearer test-token' } }), {
       REPORTS: { get: async (key) => reports.get(key) || null, put: async (key, value) => reports.set(key, value) },
       AI_SOURCES: JSON.stringify([
         { id: 'source-a', kind: 'Reddit', name: 'alpha', config: { subreddit: 'alpha', independenceKey: ' Vendor-A ' } },
         { id: 'source-b', kind: 'Reddit', name: 'beta', config: { subreddit: 'beta', independenceKey: 'Vendor-B' } },
       ]),
+      REPORT_IMPORT_TOKEN: 'test-token',
     })
     const report = await response.json()
     assert.equal(report.topics.length, 1)
