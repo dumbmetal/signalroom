@@ -75,11 +75,11 @@ export function parseOfficialPage(source, body, since) {
 
 export function parseOfficialPricing(source, body, observedAt = new Date().toISOString()) {
   if (source?.kind !== 'OfficialPricing' || source?.parserKey !== 'subscription-pricing' || !source?.pricing) throw new Error('Unsupported official pricing parser')
-  const text = cleanMarkup(body)
   const observations = []
   const warnings = []
   for (const plan of source.pricing.plans || []) {
-    const amount = findPlanAmount(text, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod)
+    const planText = extractPricingCard(body, plan.cardHeading)
+    const amount = findPlanAmount(planText, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition, plan.unitPattern, plan.forbidUnitPattern)
     if (amount === null) {
       if (plan.required !== false) warnings.push(`Missing required plan: ${plan.plan}`)
       continue
@@ -100,6 +100,7 @@ export function parseOfficialPricing(source, body, observedAt = new Date().toISO
       sourceKey: source.id,
       publisherId: source.publisherId,
       trustTier: source.trustTier,
+      ...(plan.promotion ? { promotion: plan.promotion } : {}),
     }))
   }
   const requiredCount = (source.pricing.plans || []).filter((plan) => plan.required !== false).length
@@ -188,11 +189,13 @@ function parseLmStudioChangelog(source, body, since) {
   return normalizeFeedItems(source, items, since)
 }
 
-function findPlanAmount(text, aliases, currency, billingPeriod) {
-  const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:month|mo|월)|per\s+month|monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:year|yr|년)|per\s+year|annually)` : ''
+function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after', unitPattern = '', forbidUnitPattern = '') {
+  if (!text) return null
+  const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:month|mo|월)|per\s+month|monthly|if\s+billed\s+monthly|billed\s+monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:year|yr|년)|per\s+year|annually|billed\s+up\s+front)` : ''
+  const suffixUnit = String.raw`(?:\s*(?:\/\s*|per\s+)(?:seat|user))?`
   const amountPattern = String(currency).toUpperCase() === 'KRW'
-    ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}`
-    : `(?:US\\s*)?\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s*${periods}`
+    ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}${suffixUnit}`
+    : `(?:US\\s*)?\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s*${periods}${suffixUnit}`
   for (const alias of aliases) {
     const haystack = text.toLowerCase()
     const needle = String(alias).toLowerCase()
@@ -200,12 +203,29 @@ function findPlanAmount(text, aliases, currency, billingPeriod) {
     while (needle && offset < haystack.length) {
       const index = haystack.indexOf(needle, offset)
       if (index < 0) break
-      const match = text.slice(index, index + 2_000).match(new RegExp(amountPattern, 'i'))
-      if (match) return match.slice(1).find(Boolean) || null
+      const window = amountPosition === 'before'
+        ? text.slice(Math.max(0, index - 2_000), index + needle.length)
+        : text.slice(index, index + 2_000)
+      const matches = [...window.matchAll(new RegExp(amountPattern, 'ig'))]
+      const match = amountPosition === 'before' ? matches.at(-1) : matches[0]
+      const matchedText = match?.[0]?.toLowerCase() || ''
+      if (match && (!unitPattern || matchedText.includes(String(unitPattern).toLowerCase())) && (!forbidUnitPattern || !matchedText.includes(String(forbidUnitPattern).toLowerCase()))) return match.slice(1).find(Boolean) || null
       offset = index + needle.length
     }
   }
   return null
+}
+
+function extractPricingCard(body, heading) {
+  const escapedHeading = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (!escapedHeading) return ''
+  const headingPattern = new RegExp(`<h([1-6])\\b[^>]*>\\s*${escapedHeading}\\s*</h\\1\\s*>`, 'i')
+  const match = headingPattern.exec(String(body || ''))
+  if (!match) return ''
+  const nextHeadingPattern = /<h[1-6]\b[^>]*>/ig
+  nextHeadingPattern.lastIndex = match.index + match[0].length
+  const next = nextHeadingPattern.exec(String(body || ''))
+  return cleanMarkup(String(body || '').slice(match.index, next?.index || String(body || '').length))
 }
 
 function tagText(block, names) {
