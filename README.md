@@ -55,7 +55,7 @@ The ingestion layer is intentionally provider-agnostic. Each source run is isola
 - `POST /api/sources`, `/api/reports/generate` (use `{ "force": true }` to re-crawl a date), `/api/delivery/telegram`
 - `PATCH /api/sources/:id`
 
-The deployed Cloudflare Worker additionally exposes `POST /api/crawl` and an authenticated `POST /api/report/import` endpoint. Topic ranking prioritizes the number of distinct Telegram channels mentioning a cluster, followed by volume, engagement, and recency.
+The deployed Cloudflare Worker additionally exposes authenticated `POST /api/crawl` and `POST /api/report/import` endpoints. Both use the Cloudflare `REPORT_IMPORT_TOKEN` secret. Topic ranking prioritizes the number of distinct Telegram channels mentioning a cluster, followed by volume, engagement, and recency.
 
 ## Remote MTPLX summarization
 

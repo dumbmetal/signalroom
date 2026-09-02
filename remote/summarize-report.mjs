@@ -6,8 +6,9 @@ const workerUrl = process.env.SIGNALROOM_WORKER_URL || 'https://signalroom-crawl
 const gatewayUrl = process.env.MTPLX_GATEWAY_URL || 'http://127.0.0.1:8010/v1'
 const model = process.env.MTPLX_MODEL || 'mtplx-qwen38-27b-optimized-speed-fp16'
 const tokenPath = process.env.SIGNALROOM_IMPORT_TOKEN_FILE || `${process.env.HOME}/.config/signalroom/worker-import-token`
+const token = (await readFile(tokenPath, 'utf8')).trim()
 
-const draft = await fetchJson(`${workerUrl}/api/crawl?summary=off`, { method: 'POST' })
+const draft = await fetchJson(`${workerUrl}/api/crawl?summary=off`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
 if (!Array.isArray(draft.topics) || draft.topics.length === 0) {
   console.log(JSON.stringify({ ok: true, topics: 0, message: 'No topics to summarize' }))
   process.exit(0)
@@ -43,7 +44,6 @@ const topics = draft.topics.map((topic) => {
   return summary ? { ...topic, title: String(summary.title || topic.title), summary: String(summary.summary || topic.summary) } : topic
 })
 
-const token = (await readFile(tokenPath, 'utf8')).trim()
 const imported = await fetchJson(`${workerUrl}/api/report/import`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
