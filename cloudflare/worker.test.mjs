@@ -1,13 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import worker, { applyModelSummaries, buildTopics, buildTopicsWithHistory, normalizeReport } from './worker.ts'
+import worker, { BRIEFING_HISTORY_KEY, applyModelSummaries, buildTopics, buildTopicsWithHistory, normalizeReport } from './worker.ts'
+import { topicFingerprint } from '../shared/briefing-quality.mjs'
 import { normalizePriceObservation } from '../shared/price-snapshots.mjs'
 
 const post = (sourceId, text, hour, id, overrides = {}) => ({
   source: 'Telegram', sourceId, text, engagement: 100, publishedAt: `2026-08-27T${String(hour).padStart(2, '0')}:00:00.000Z`, url: `https://t.me/${sourceId}/${id}`,
   ...overrides,
 })
+const reportDateForTest = (value) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(value)
 
 test('production topic builder excludes single-channel chatter', () => {
   const topics = buildTopics([
@@ -40,11 +42,6 @@ test('report normalization keeps URL-only legacy evidence from independent sourc
   }], sourceRuns: [] })
   assert.equal(report.topics.length, 1)
   assert.equal(report.topics[0].independentSourceCount, 2)
-})
-
-test('manual crawl requires the report import bearer token', async () => {
-  const response = await worker.fetch(new Request('https://example.com/api/crawl', { method: 'POST' }), { REPORTS: {}, REPORT_IMPORT_TOKEN: 'test-token' })
-  assert.equal(response.status, 401)
 })
 
 test('evidence always contains every corroborating channel before extra posts', () => {
@@ -142,6 +139,124 @@ test('worker carries compact history and promotes only a qualifying multi-day pa
   assert.equal(dayTwo.topicHistory.length, 3)
 })
 
+test('worker reads and writes bounded report history instead of using only latest', async () => {
+  const now = new Date()
+  const reportDate = (value) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(value)
+  const dayOne = new Date(now.getTime() - 48 * 60 * 60 * 1000)
+  const dayTwo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  const fingerprint = topicFingerprint({ section: 'ai', evidence: [
+    { excerpt: 'Context inference local long memory pressure runtime' },
+    { excerpt: 'Context inference local long memory pressure benchmark' },
+  ] })
+  const historyReports = [dayOne, dayTwo].map((seenAt, index) => ({
+    date: reportDate(seenAt),
+    generatedAt: seenAt.toISOString(),
+    topics: [],
+    topicHistory: [{ fingerprint, reportDate: reportDate(seenAt), seenAt: seenAt.toISOString(), authorKey: `publisher-a:author-${index}`, publisherId: 'publisher-a', contentHash: `history-${index}` }],
+  }))
+  const values = new Map([
+    ['latest', { date: reportDate(dayTwo), topics: [], sourceRuns: [], priceSnapshots: [] }],
+    [BRIEFING_HISTORY_KEY, { reports: historyReports }],
+  ])
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const isAlpha = String(url).includes('/r/alpha/')
+    return new Response(JSON.stringify({ data: { children: [{ data: {
+      name: isAlpha ? 'current-alpha' : 'current-beta',
+      title: isAlpha ? 'Context inference local long memory pressure runtime' : 'Context inference local long memory pressure benchmark',
+      selftext: '', permalink: isAlpha ? '/r/alpha/current-alpha' : '/r/beta/current-beta',
+      created_utc: Math.floor(now.getTime() / 1000), score: 1,
+    } }] } }))
+  }
+  try {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+      REPORTS: {
+        get: async (key) => values.get(key) || null,
+        put: async (key, value) => values.set(key, JSON.parse(value)),
+      },
+      AI_SOURCES: JSON.stringify([
+        { id: 'source-a', kind: 'Reddit', name: 'alpha', config: { subreddit: 'alpha', independenceKey: 'publisher-a' } },
+        { id: 'source-b', kind: 'Reddit', name: 'beta', config: { subreddit: 'beta', independenceKey: 'publisher-b' } },
+      ]),
+    })
+    const report = await response.json()
+    assert.equal(report.topics.length, 1)
+    assert.equal(report.topics[0].contentType, 'community_opinion')
+    assert.equal(report.topics[0].recurrence.firstSeenAt, dayOne.toISOString())
+    assert.ok(report.topics[0].recurrence.mentionCount >= 3)
+    assert.equal(values.get(BRIEFING_HISTORY_KEY).reports.length, 3)
+    assert.ok(values.get(BRIEFING_HISTORY_KEY).reports.some((item) => item.date === report.date))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('worker limits history to the newest thirty dates and recovers from corrupt history', async () => {
+  const now = new Date()
+  const values = new Map([
+    ['latest', null],
+    [BRIEFING_HISTORY_KEY, '{not-json'],
+  ])
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('{}', { status: 500 })
+  try {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+      REPORTS: {
+        get: async (key) => values.get(key) || null,
+        put: async (key, value) => values.set(key, JSON.parse(value)),
+      },
+      OFFICIAL_SOURCES: '[]',
+    })
+    const report = await response.json()
+    assert.equal(report.sourceRuns.length, 0)
+    assert.equal(values.get(BRIEFING_HISTORY_KEY).reports.length, 1)
+
+    values.set(BRIEFING_HISTORY_KEY, {
+      reports: Array.from({ length: 35 }, (_, index) => {
+        const seenAt = new Date(now.getTime() - index * 24 * 60 * 60 * 1000)
+        return { date: reportDateForTest(seenAt), generatedAt: seenAt.toISOString(), topics: [] }
+      }),
+    })
+    await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+      REPORTS: {
+        get: async (key) => values.get(key) || null,
+        put: async (key, value) => values.set(key, JSON.parse(value)),
+      },
+      OFFICIAL_SOURCES: '[]',
+    })
+    assert.equal(values.get(BRIEFING_HISTORY_KEY).reports.length, 30)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('worker preserves prior history when a configured source fails', async () => {
+  const now = new Date()
+  const prior = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  const priorReport = { date: reportDateForTest(prior), generatedAt: prior.toISOString(), topics: [], topicHistory: [] }
+  const values = new Map([
+    ['latest', null],
+    [BRIEFING_HISTORY_KEY, { reports: [priorReport] }],
+  ])
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('upstream failure', { status: 503, statusText: 'Unavailable' })
+  try {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+      REPORTS: {
+        get: async (key) => values.get(key) || null,
+        put: async (key, value) => values.set(key, JSON.parse(value)),
+      },
+      OFFICIAL_SOURCES: JSON.stringify(['openai-news']),
+    })
+    const report = await response.json()
+    assert.equal(report.sourceRuns[0].status, 'error')
+    assert.ok(values.get(BRIEFING_HISTORY_KEY).reports.some((item) => item.date === priorReport.date))
+    assert.ok(values.get(BRIEFING_HISTORY_KEY).reports.some((item) => item.date === report.date))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('report normalization preserves optional briefing quality fields and single official reports', () => {
   const recurrence = { authorCount: 3, publisherCount: 2, mentionCount: 4, firstSeenAt: '2026-08-25T12:00:00.000Z', lastSeenAt: '2026-08-27T12:00:00.000Z', windowHours: 48 }
   const topicHistory = [{ fingerprint: 'topic-fnv1a-12345678', reportDate: '2026-08-27', seenAt: '2026-08-27T12:00:00.000Z', authorKey: 'vendor', publisherId: 'vendor', contentHash: 'release-hash' }]
@@ -217,13 +332,12 @@ test('worker crawl propagates configured independence keys into corroborating ev
     return new Response(JSON.stringify({ data: { children: [{ data: { name: alpha ? 'a' : 'b', title: alpha ? 'Model subscription billing changed for teams' : 'Model subscription billing changed for team plans', selftext: '', permalink: alpha ? '/r/alpha/a' : '/r/beta/b', created_utc: now, score: 1 } }] } }))
   }
   try {
-    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST', headers: { Authorization: 'Bearer test-token' } }), {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
       REPORTS: { get: async (key) => reports.get(key) || null, put: async (key, value) => reports.set(key, value) },
       AI_SOURCES: JSON.stringify([
         { id: 'source-a', kind: 'Reddit', name: 'alpha', config: { subreddit: 'alpha', independenceKey: ' Vendor-A ' } },
         { id: 'source-b', kind: 'Reddit', name: 'beta', config: { subreddit: 'beta', independenceKey: 'Vendor-B' } },
       ]),
-      REPORT_IMPORT_TOKEN: 'test-token',
     })
     const report = await response.json()
     assert.equal(report.topics.length, 1)
@@ -245,7 +359,7 @@ test('worker collects allowlisted official sources and merges prices with latest
   let latest = { date: '2026-08-30', topics: [], sourceRuns: [], priceSnapshots: [previousPrice()] }
   const reports = {
     get: async () => latest,
-    put: async (_key, value) => { latest = JSON.parse(value) },
+    put: async (key, value) => { if (key === 'latest') latest = JSON.parse(value) },
   }
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (url) => {
@@ -258,10 +372,9 @@ test('worker collects allowlisted official sources and merges prices with latest
     return new Response('cookie=do-not-leak response body', { status: 503, statusText: 'TOKEN secret' })
   }
   try {
-    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST', headers: { Authorization: 'Bearer test-token' } }), {
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
       REPORTS: reports,
       OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'openai-chatgpt-plus-usd', 'ollama-releases']),
-      REPORT_IMPORT_TOKEN: 'test-token',
     })
     const report = await response.json()
 
@@ -284,10 +397,9 @@ test('worker preserves inherited prices when the current official pricing source
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response('sensitive body', { status: 502, statusText: 'secret' })
   try {
-    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST', headers: { Authorization: 'Bearer test-token' } }), {
-      REPORTS: { get: async () => latest, put: async (_key, value) => { latest = JSON.parse(value) } },
+    const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
+      REPORTS: { get: async () => latest, put: async (key, value) => { if (key === 'latest') latest = JSON.parse(value) } },
       OFFICIAL_SOURCES: JSON.stringify(['openai-chatgpt-plus-usd']),
-      REPORT_IMPORT_TOKEN: 'test-token',
     })
     const report = await response.json()
 
