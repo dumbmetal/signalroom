@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTopics, normalizeReport } from './worker.ts'
+import worker, { buildTopics, normalizeReport } from './worker.ts'
 
 const post = (sourceId, text, hour, id) => ({
   source: 'Telegram', sourceId, text, engagement: 100, publishedAt: `2026-08-27T${String(hour).padStart(2, '0')}:00:00.000Z`, url: `https://t.me/${sourceId}/${id}`,
@@ -25,6 +25,11 @@ test('report normalization removes imported single-source topics and reranks', (
   ], sourceRuns: [] })
   assert.deepEqual(report.topics.map((topic) => topic.id), ['shared'])
   assert.equal(report.topics[0].rank, 1)
+})
+
+test('manual crawl requires the report import bearer token', async () => {
+  const response = await worker.fetch(new Request('https://example.com/api/crawl', { method: 'POST' }), { REPORTS: {}, REPORT_IMPORT_TOKEN: 'test-token' })
+  assert.equal(response.status, 401)
 })
 
 test('evidence always contains every corroborating channel before extra posts', () => {
