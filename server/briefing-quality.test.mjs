@@ -160,6 +160,15 @@ test('collapses markup and case variants from the same publisher', () => {
   assert.deepEqual(dedupeNearDuplicates(messages).map((message) => message.id), ['first'])
 })
 
+test('keeps distinct releases published on the same canonical page', () => {
+  const messages = [
+    { id: 'release-1', externalId: 'release-1', independenceKey: 'lm-studio', url: 'https://lm.example/changelog', text: 'LM Studio 0.4.22 release', publishedAt: '2026-08-30T08:00:00.000Z' },
+    { id: 'release-2', externalId: 'release-2', independenceKey: 'lm-studio', url: 'https://lm.example/changelog', text: 'LM Studio 0.4.23 release', publishedAt: '2026-08-31T08:00:00.000Z' },
+  ]
+
+  assert.deepEqual(dedupeNearDuplicates(messages).map((message) => message.id), ['release-1', 'release-2'])
+})
+
 test('suppresses only high-overlap posts within one publisher', () => {
   const shared = 'Model subscription pricing changed today for enterprise customers in Europe with annual billing'
   const messages = [
@@ -246,6 +255,16 @@ test('derives unique recurrence counts from non-copied evidence across report da
   })
   assert.equal(result.topics[0].contentType, 'community_opinion')
   assert.equal(result.topics[0].status, 'confirmed')
+})
+
+test('namespaces recurrence authors by publisher identity', () => {
+  const topic = communityTopic('ai-1-shared-author', [
+    { publisher: 'reddit', author: 'alice', text: 'Local model memory pressure from Reddit', time: '2026-08-30T08:00:00.000Z', contentHash: 'reddit-alice' },
+    { publisher: 'forum', author: 'alice', text: 'Local model memory pressure from forum', time: '2026-08-30T09:00:00.000Z', contentHash: 'forum-alice' },
+  ])
+
+  const history = updateTopicHistory([], [topic], { now: new Date('2026-08-30T12:00:00.000Z'), reportDate: '2026-08-30' })
+  assert.equal(recurrenceFor(topic, history, { now: new Date('2026-08-30T12:00:00.000Z') }).authorCount, 2)
 })
 
 test('rejects a community pattern below the author or multi-day threshold', () => {

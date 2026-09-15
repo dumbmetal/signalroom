@@ -2,7 +2,7 @@ import { annotateMessage, BRIEFING_CONTENT_TYPES, CLAIM_STATUSES, contentHashFor
 import { getOfficialSource, OFFICIAL_SOURCE_KINDS } from '../shared/official-source-catalog.mjs'
 import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
-import { dedupeNearDuplicates, enrichTopicsWithHistory, isReportableTopic, topicHistoryFromReports } from '../shared/briefing-quality.mjs'
+import { dedupeNearDuplicates, enrichTopic, enrichTopicsWithHistory, isReportableTopic, topicHistoryFromReports } from '../shared/briefing-quality.mjs'
 
 export const BRIEFING_HISTORY_KEY = 'briefing-history'
 const HISTORY_MAX_REPORTS = 30
@@ -391,7 +391,20 @@ function workerDate(value?: Date | string | number) {
 }
 
 export function normalizeReport(report: any) {
-  const topics = (Array.isArray(report?.topics) ? report.topics : []).map(normalizeTopic).filter(isReportableTopic).map((topic: any, index: number) => ({ ...topic, rank: index + 1 }))
+  const now = report?.generatedAt || Date.now()
+  const priceSnapshots = Array.isArray(report?.priceSnapshots) ? report.priceSnapshots : []
+  const topics = (Array.isArray(report?.topics) ? report.topics : [])
+    .map(normalizeTopic)
+    .map((topic: any) => {
+      const imported = { ...topic }
+      delete imported.contentType
+      delete imported.status
+      delete imported.freshness
+      delete imported.lastVerifiedAt
+      return enrichTopic(imported, { now, priceSnapshots })
+    })
+    .filter(isReportableTopic)
+    .map((topic: any, index: number) => ({ ...topic, rank: index + 1 }))
   const topicHistory = topicHistoryFromReports([report], { now: report?.generatedAt || Date.now() })
   return { ...report, topics, ...(Array.isArray(report?.topicHistory) || topicHistory.length ? { topicHistory } : {}), sourceRuns: Array.isArray(report?.sourceRuns) ? report.sourceRuns : [] }
 }
@@ -421,6 +434,17 @@ function normalizeTopic(topic: any, index = 0) {
   return normalized
 }
 
+function importedTrustTier(item: any) {
+  const sourceKind = String(item?.source || '')
+  if (!OFFICIAL_SOURCE_KINDS.includes(sourceKind)) return 'community'
+  try {
+    const catalog = getOfficialSource(item?.sourceKey)
+    return catalog.kind === sourceKind ? catalog.trustTier : 'community'
+  } catch {
+    return 'community'
+  }
+}
+
 function normalizeRecurrence(value: any) {
   if (!value) return null
   const counts = ['authorCount', 'publisherCount', 'mentionCount'].map((key) => Number(value[key]))
@@ -431,17 +455,6 @@ function normalizeRecurrence(value: any) {
 
 function validIsoDate(value: unknown) {
   return typeof value === 'string' && Number.isFinite(Date.parse(value))
-}
-
-function importedTrustTier(item: any) {
-  const sourceKind = String(item?.source || '')
-  if (!OFFICIAL_SOURCE_KINDS.includes(sourceKind)) return 'community'
-  try {
-    const catalog = getOfficialSource(item?.sourceKey)
-    return catalog.kind === sourceKind ? catalog.trustTier : 'community'
-  } catch {
-    return 'community'
-  }
 }
 
 function independentKey(post: Pick<Message, 'source' | 'sourceId' | 'sourceKey' | 'publisherId' | 'independenceKey'>) { return independenceKeyFor(post) }

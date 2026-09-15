@@ -31,7 +31,7 @@ export function claimStatusFor(topic = {}, options = {}) {
   if (promotionEndsAt !== null && promotionEndsAt <= now) return 'expired'
   const evidence = Array.isArray(topic.evidence) ? topic.evidence : []
   if (hasIndependentConflict(topic, evidence)) return 'disputed'
-  if (qualifiesAsCommunityPattern(topic.recurrence)) return 'confirmed'
+  if (topic?.contentType === 'community_opinion' && qualifiesAsCommunityPattern(topic.recurrence)) return 'confirmed'
   return countIndependentCorroboration(evidence) >= 2 ? 'confirmed' : 'reported'
 }
 
@@ -56,7 +56,7 @@ export function enrichTopic(topic, options = {}) {
   return {
     ...topic,
     contentType,
-    status: claimStatusFor(topic, options),
+    status: claimStatusFor({ ...topic, contentType }, options),
     freshness: freshnessFor(contentType, lastVerifiedAt, { now: options.now, promotionEndsAt }),
     ...(lastVerifiedAt ? { lastVerifiedAt } : {}),
   }
@@ -74,7 +74,7 @@ export function dedupeNearDuplicates(messages, options = {}) {
     const canonicalUrl = canonicalizeUrl(message?.canonicalUrl || message?.url)
     const duplicateIndex = kept.findIndex((candidate) => candidate.publisher === publisher && (
       normalizedText === candidate.normalizedText
-      || Boolean(canonicalUrl && canonicalUrl === candidate.canonicalUrl)
+      || Boolean(canonicalUrl && canonicalUrl === candidate.canonicalUrl && sameCanonicalResource(message, candidate.message))
       || hasHighTokenOverlap(tokens, candidate.tokens, threshold, minimumTokens)
     ))
     if (duplicateIndex < 0) {
@@ -148,9 +148,10 @@ export function enrichTopicsWithHistory(topics, previousHistory, options = {}) {
 }
 
 export function isReportableTopic(topic) {
-  if (topic?.contentType === 'community_opinion') return qualifiesAsCommunityPattern(topic?.recurrence)
-  if (CONTENT_TYPES.has(topic?.contentType)) return true
-  return countIndependentCorroboration(Array.isArray(topic?.evidence) ? topic.evidence : []) >= 2
+  const evidence = Array.isArray(topic?.evidence) ? topic.evidence : []
+  if (topic?.contentType === 'community_opinion') return qualifiesAsCommunityPattern(topic?.recurrence) && countIndependentCorroboration(evidence) >= 1
+  if (CONTENT_TYPES.has(topic?.contentType)) return countIndependentCorroboration(evidence) >= 1
+  return countIndependentCorroboration(evidence) >= 2
 }
 
 export function topicHistoryFromReports(reports, options = {}) {
@@ -241,6 +242,17 @@ function precedesDuplicate(candidate, current) {
   return key(candidate) < key(current)
 }
 
+function sameCanonicalResource(left, right) {
+  const leftIdentity = resourceIdentity(left)
+  const rightIdentity = resourceIdentity(right)
+  if (leftIdentity && rightIdentity) return leftIdentity === rightIdentity
+  return !leftIdentity && !rightIdentity
+}
+
+function resourceIdentity(message) {
+  return String(message?.externalId || message?.id || '').trim()
+}
+
 function historyRecordsForTopic(topic, { now, reportDate }) {
   const fingerprint = topicFingerprint(topic)
   return attributedEvidence(Array.isArray(topic?.evidence) ? topic.evidence : []).map((item) => {
@@ -250,7 +262,7 @@ function historyRecordsForTopic(topic, { now, reportDate }) {
       fingerprint,
       reportDate,
       seenAt: now.toISOString(),
-      authorKey: author || `${publisherId}:unknown`,
+      authorKey: author ? publisherId + ':' + author : publisherId + ':unknown',
       publisherId,
       contentHash: contentHashFor(item),
     }
