@@ -1,4 +1,4 @@
-import { annotateMessage, BRIEFING_CONTENT_TYPES, CLAIM_STATUSES, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { annotateMessage, BRIEFING_CONTENT_TYPES, CLAIM_STATUSES, contentHashFor, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
 import { getOfficialSource, OFFICIAL_SOURCE_KINDS } from '../shared/official-source-catalog.mjs'
 import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
@@ -125,7 +125,16 @@ function parseSources(raw?: string, telegramRaw?: string, officialRaw?: string) 
       return [{ id, kind: 'OfficialFeed', name: id, section: 'ai', enabled: true, config: { catalogId: id } }]
     }
   })
-  return [...parsed, ...telegram, ...official].filter((source) => ['Telegram', 'Reddit', 'X', 'Threads', ...OFFICIAL_SOURCE_KINDS].includes(source.kind) && source.enabled !== false)
+  const seenOfficialIds = new Set<string>()
+  return [...parsed, ...telegram, ...official]
+    .filter((source) => ['Telegram', 'Reddit', 'X', 'Threads', ...OFFICIAL_SOURCE_KINDS].includes(source.kind) && source.enabled !== false)
+    .filter((source) => {
+      if (!OFFICIAL_SOURCE_KINDS.includes(source.kind)) return true
+      const key = String(source.config?.catalogId || source.id || '').trim().toLowerCase()
+      if (!key || seenOfficialIds.has(key)) return false
+      seenOfficialIds.add(key)
+      return true
+    })
 }
 
 async function fetchSource(source: any, env: Env, since: string): Promise<any> {
@@ -395,7 +404,7 @@ function normalizeTopic(topic: any, index = 0) {
     excerpt: item.excerpt || item.text || '',
     time: item.time || relativeTime(item.publishedAt || new Date().toISOString()),
     publishedAt: validIsoDate(item.publishedAt) ? item.publishedAt : validIsoDate(item.time) ? item.time : undefined,
-    url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: item.trustTier || 'community', contentHash: item.contentHash,
+    url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: importedTrustTier(item), contentHash: contentHashFor({ ...item, contentHash: undefined }),
   })).filter((item: any) => item.excerpt || item.url) : []
   const sources = [...new Set(evidence.map((item: any) => item.label).filter((label: string) => label && label !== 'Unknown source'))]
   const independentSourceCount = countIndependentCorroboration(evidence)
@@ -422,6 +431,17 @@ function normalizeRecurrence(value: any) {
 
 function validIsoDate(value: unknown) {
   return typeof value === 'string' && Number.isFinite(Date.parse(value))
+}
+
+function importedTrustTier(item: any) {
+  const sourceKind = String(item?.source || '')
+  if (!OFFICIAL_SOURCE_KINDS.includes(sourceKind)) return 'community'
+  try {
+    const catalog = getOfficialSource(item?.sourceKey)
+    return catalog.kind === sourceKind ? catalog.trustTier : 'community'
+  } catch {
+    return 'community'
+  }
 }
 
 function independentKey(post: Pick<Message, 'source' | 'sourceId' | 'sourceKey' | 'publisherId' | 'independenceKey'>) { return independenceKeyFor(post) }

@@ -44,6 +44,38 @@ test('report normalization keeps URL-only legacy evidence from independent sourc
   assert.equal(report.topics[0].independentSourceCount, 2)
 })
 
+test('report normalization recomputes imported content hashes before corroboration', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-hash',
+    evidence: [
+      { source: 'Reddit', label: 'alpha', excerpt: 'Alpha independently reports the model release', url: 'https://reddit.com/r/alpha/1', contentHash: 'same-forged-hash' },
+      { source: 'Threads', label: 'beta', excerpt: 'Beta independently reports the model release', url: 'https://threads.net/@beta/1', contentHash: 'same-forged-hash' },
+    ],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].independentSourceCount, 2)
+})
+
+test('report normalization drops typed topics without evidence', () => {
+  const report = normalizeReport({ topics: [{ id: 'empty', contentType: 'price_change', evidence: [] }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 0)
+})
+
+test('report normalization does not trust elevated tiers from non-official imported evidence', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-tier',
+    evidence: [
+      { source: 'Reddit', label: 'community', trustTier: 'primary', excerpt: 'Community evidence one', url: 'https://reddit.com/r/example/1' },
+      { source: 'Threads', label: 'independent', excerpt: 'Independent evidence two', url: 'https://threads.net/@example/2' },
+    ],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].evidence[0].trustTier, 'community')
+})
+
 test('evidence always contains every corroborating channel before extra posts', () => {
   const manyAlpha = Array.from({ length: 7 }, (_, index) => post('alpha', `BTC ETF inflow update ${index}`, 20 - index, index + 1))
   const topics = buildTopics([...manyAlpha, post('beta', 'BTC ETF inflow update confirmed', 10, 99)])
@@ -374,7 +406,7 @@ test('worker collects allowlisted official sources and merges prices with latest
   try {
     const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
       REPORTS: reports,
-      OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'openai-chatgpt-plus-usd', 'ollama-releases']),
+      OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'openai-news', 'openai-chatgpt-plus-usd', 'ollama-releases']),
     })
     const report = await response.json()
 
@@ -384,6 +416,7 @@ test('worker collects allowlisted official sources and merges prices with latest
     assert.equal(feed.source, 'OpenAI News')
     assert.equal(feed.status, 'ok')
     assert.equal(feed.count, 1)
+    assert.equal(report.sourceRuns.filter((run) => run.sourceId === 'openai-news').length, 1)
     const failed = report.sourceRuns.find((run) => run.sourceId === 'ollama-releases')
     assert.equal(failed.status, 'error')
     assert.doesNotMatch(failed.error, /cookie|token|secret|response body|https?:/i)
