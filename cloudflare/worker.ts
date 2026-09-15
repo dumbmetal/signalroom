@@ -1,4 +1,4 @@
-import { annotateMessage, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
+import { annotateMessage, contentHashFor, countIndependentCorroboration, independenceKeyFor, normalizeIdentityKey, normalizeSourceDefinition, selectCorroboratingEvidence } from '../shared/briefing-contract.mjs'
 import { getOfficialSource, OFFICIAL_SOURCE_KINDS } from '../shared/official-source-catalog.mjs'
 import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
@@ -100,7 +100,16 @@ function parseSources(raw?: string, telegramRaw?: string, officialRaw?: string) 
       return [{ id, kind: 'OfficialFeed', name: id, section: 'ai', enabled: true, config: { catalogId: id } }]
     }
   })
-  return [...parsed, ...telegram, ...official].filter((source) => ['Telegram', 'Reddit', 'X', 'Threads', ...OFFICIAL_SOURCE_KINDS].includes(source.kind) && source.enabled !== false)
+  const seenOfficialIds = new Set<string>()
+  return [...parsed, ...telegram, ...official]
+    .filter((source) => ['Telegram', 'Reddit', 'X', 'Threads', ...OFFICIAL_SOURCE_KINDS].includes(source.kind) && source.enabled !== false)
+    .filter((source) => {
+      if (!OFFICIAL_SOURCE_KINDS.includes(source.kind)) return true
+      const key = String(source.config?.catalogId || source.id || '').trim().toLowerCase()
+      if (!key || seenOfficialIds.has(key)) return false
+      seenOfficialIds.add(key)
+      return true
+    })
 }
 
 async function fetchSource(source: any, env: Env, since: string): Promise<any> {
@@ -309,11 +318,22 @@ function normalizeTopic(topic: any, index = 0) {
     author: item.author || item.sourceId || 'Unknown author',
     excerpt: item.excerpt || item.text || '',
     time: item.time || relativeTime(item.publishedAt || new Date().toISOString()),
-    url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: item.trustTier || 'community', contentHash: item.contentHash,
+    url: item.url || '', sourceKey: normalizeIdentityKey(item.sourceKey), publisherId: normalizeIdentityKey(item.publisherId), independenceKey: independenceKeyFor({ source: item.source || 'Telegram', sourceId: item.label || item.sourceId || 'Unknown source', sourceKey: item.sourceKey, publisherId: item.publisherId, independenceKey: item.independenceKey }), trustTier: importedTrustTier(item), contentHash: contentHashFor({ ...item, contentHash: undefined }),
   })).filter((item: any) => item.excerpt || item.url) : []
   const sources = [...new Set(evidence.map((item: any) => item.label).filter((label: string) => label && label !== 'Unknown source'))]
   const independentSourceCount = countIndependentCorroboration(evidence)
   return { ...topic, id: topic?.id || `topic-${index + 1}`, rank: Number(topic?.rank || index + 1), sources, independentSourceCount, evidence }
+}
+
+function importedTrustTier(item: any) {
+  const sourceKind = String(item?.source || '')
+  if (!OFFICIAL_SOURCE_KINDS.includes(sourceKind)) return 'community'
+  try {
+    const catalog = getOfficialSource(item?.sourceKey)
+    return catalog.kind === sourceKind ? catalog.trustTier : 'community'
+  } catch {
+    return 'community'
+  }
 }
 
 function independentKey(post: Pick<Message, 'source' | 'sourceId' | 'sourceKey' | 'publisherId' | 'independenceKey'>) { return independenceKeyFor(post) }

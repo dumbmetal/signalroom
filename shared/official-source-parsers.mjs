@@ -105,7 +105,21 @@ export function parseOfficialPricing(source, body, observedAt = new Date().toISO
   const requiredCount = (source.pricing.plans || []).filter((plan) => plan.required !== false).length
   const foundRequiredCount = observations.filter((observation) => (source.pricing.plans || []).some((plan) => plan.plan === observation.plan && plan.required !== false)).length
   if (requiredCount > 0 && foundRequiredCount === 0) throw new Error('Official pricing parser found none of the required plans')
-  return { observations, warnings }
+  return {
+    messages: observations.map((observation) => ({
+      externalId: 'price:' + observation.key + ':' + observation.contentHash,
+      source: source.kind,
+      sourceId: source.name || source.id,
+      author: source.publisher || source.publisherId || source.name || source.id,
+      text: observation.vendor + ' ' + observation.product + ' ' + observation.plan + ' pricing updated' + (observation.promotion ? ': ' + observation.promotion.label : ''),
+      url: source.url,
+      publishedAt: observation.observedAt,
+      engagement: {},
+      priceKeys: [observation.key],
+    })),
+    observations,
+    warnings,
+  }
 }
 
 export function parseOfficialSource(source, body, since, observedAt = new Date().toISOString()) {

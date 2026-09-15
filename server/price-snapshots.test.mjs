@@ -55,6 +55,24 @@ test('same value updates lastVerifiedAt without creating a fake change', () => {
   assert.equal(merged[0].lastVerifiedAt, '2026-08-31T12:00:00.000Z')
 })
 
+test('same value retains the highest trust provenance when a lower tier is newer', () => {
+  const primary = observed({
+    sourceKey: 'openai-primary',
+    lastVerifiedAt: '2026-08-30T10:00:00.000Z',
+  })
+  const maintainer = observed({
+    sourceKey: 'openai-maintainer',
+    trustTier: 'maintainer',
+    lastVerifiedAt: '2026-08-31T12:00:00.000Z',
+  })
+  const merged = mergePriceSnapshots([primary], [maintainer])
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].sourceKey, 'openai-primary')
+  assert.equal(merged[0].trustTier, 'primary')
+  assert.equal(merged[0].lastVerifiedAt, '2026-08-31T12:00:00.000Z')
+})
+
 test('retains only the two newest distinct values for a key', () => {
   const first = observed()
   const second = observed({ amountMinor: 2_500, observedAt: '2026-08-31T10:00:00.000Z', lastVerifiedAt: '2026-08-31T10:00:00.000Z' })

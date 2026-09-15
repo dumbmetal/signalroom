@@ -8,7 +8,7 @@ import {
   listOfficialSources,
   resolveOfficialSource,
 } from '../shared/official-source-catalog.mjs'
-import { collectOfficialSource, parseOfficialFeed, parseOfficialPage, parseOfficialPricing } from '../shared/official-source-parsers.mjs'
+import { collectOfficialSource, parseOfficialFeed, parseOfficialPage, parseOfficialPricing, parseOfficialSource } from '../shared/official-source-parsers.mjs'
 
 const fixture = (name) => readFile(new URL(`./fixtures/official/${name}`, import.meta.url), 'utf8')
 
@@ -114,6 +114,16 @@ test('extracts required official USD plans and fails closed after parser drift',
   assert.equal(parsed.observations[0].currency, 'USD')
   assert.equal(parsed.observations[0].amountMinor, 2_000)
   assert.throws(() => parseOfficialPricing(source, '<html><h1>Pricing temporarily unavailable</h1></html>', '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
+})
+
+test('exposes official pricing observations as price-keyed messages for topic pipelines', async () => {
+  const source = getOfficialSource('openai-chatgpt-plus-usd')
+  const parsed = parseOfficialSource(source, await fixture('pricing-us.html'), '2026-08-30T00:00:00.000Z', '2026-08-31T10:00:00.000Z')
+
+  assert.equal(parsed.messages.length, 1)
+  assert.equal(parsed.messages[0].source, 'OfficialPricing')
+  assert.deepEqual(parsed.messages[0].priceKeys, [parsed.observations[0].key])
+  assert.equal(parsed.messages[0].publishedAt, '2026-08-31T10:00:00.000Z')
 })
 
 test('extracts Claude Pro USD from the official Anthropic support page fixture', async () => {

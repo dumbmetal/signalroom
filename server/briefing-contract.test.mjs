@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { canonicalizeUrl, annotateMessage, countIndependentCorroboration, independenceKeyFor, normalizeSourceDefinition } from '../shared/briefing-contract.mjs'
+import { canonicalizeUrl, annotateMessage, countIndependentCorroboration, independenceKeyFor, normalizeSourceDefinition, selectIndependentEvidence } from '../shared/briefing-contract.mjs'
 
 test('canonicalizes tracking URLs without removing meaningful query parameters', () => {
   assert.equal(canonicalizeUrl('https://Example.com/release/?utm_source=x&plan=pro#details'), 'https://example.com/release?plan=pro')
@@ -42,6 +42,13 @@ test('breaks equal-time copy ties deterministically regardless of input order', 
   const beta = { source: 'Telegram', sourceId: 'beta-copy', independenceKey: 'beta', text: 'Original model pricing announcement', url: 'https://t.me/beta/1', publishedAt: '2026-08-31T10:00:00.000Z' }
   assert.equal(countIndependentCorroboration([followup, beta, alpha]), 1)
   assert.equal(countIndependentCorroboration([alpha, beta, followup]), 1)
+})
+
+test('prefers official trust tiers over earlier community copies', () => {
+  const community = { source: 'Reddit', sourceId: 'community', independenceKey: 'community', trustTier: 'community', text: 'Official model pricing announcement', publishedAt: '2026-08-31T10:00:00.000Z' }
+  const official = { source: 'OfficialFeed', sourceId: 'vendor', independenceKey: 'vendor', trustTier: 'primary', text: 'Official model pricing announcement', publishedAt: '2026-08-31T12:00:00.000Z' }
+
+  assert.equal(selectIndependentEvidence([community, official])[0], official)
 })
 
 test('treats markup and entity variants as one copied text', () => {

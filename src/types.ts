@@ -1,5 +1,5 @@
 export type Section = 'crypto' | 'ai'
-export type SourceKind = 'Telegram' | 'Reddit' | 'X' | 'Threads'
+export type SourceKind = 'Telegram' | 'Reddit' | 'X' | 'Threads' | 'OfficialFeed' | 'OfficialPage' | 'OfficialPricing'
 export type BriefingContentType = 'product_update' | 'price_change' | 'discount_offer' | 'setup_tip' | 'community_opinion'
 export type TrustTier = 'primary' | 'maintainer' | 'independent' | 'community'
 export type ClaimStatus = 'confirmed' | 'reported' | 'disputed' | 'expired'

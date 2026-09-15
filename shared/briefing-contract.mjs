@@ -3,6 +3,7 @@ export const TRUST_TIERS = ['primary', 'maintainer', 'independent', 'community']
 export const CLAIM_STATUSES = ['confirmed', 'reported', 'disputed', 'expired']
 
 const TRACKING_PARAMETER = /^(utm_|fbclid$|gclid$|mc_[ce]id$)/i
+const TRUST_PRIORITY = new Map(TRUST_TIERS.map((tier, index) => [tier, TRUST_TIERS.length - index]))
 
 export function canonicalizeUrl(value) {
   const raw = String(value || '').trim()
@@ -96,6 +97,9 @@ export function selectIndependentEvidence(messages) {
 }
 
 function precedesRepresentative(candidate, current) {
+  const candidateTrust = trustPriority(candidate)
+  const currentTrust = trustPriority(current)
+  if (candidateTrust !== currentTrust) return candidateTrust > currentTrust
   const candidateTime = Date.parse(candidate?.publishedAt || '')
   const currentTime = Date.parse(current?.publishedAt || '')
   const normalizedCandidateTime = Number.isFinite(candidateTime) ? candidateTime : Number.POSITIVE_INFINITY
@@ -103,6 +107,10 @@ function precedesRepresentative(candidate, current) {
   if (normalizedCandidateTime !== normalizedCurrentTime) return normalizedCandidateTime < normalizedCurrentTime
   const key = (message) => `${canonicalizeUrl(message?.canonicalUrl || message?.url)}\u0000${independenceKeyFor(message)}\u0000${String(message?.sourceId || '')}`
   return key(candidate) < key(current)
+}
+
+function trustPriority(message) {
+  return TRUST_PRIORITY.get(normalizeIdentityKey(message?.trustTier)) || 0
 }
 
 export function countIndependentCorroboration(messages) {
