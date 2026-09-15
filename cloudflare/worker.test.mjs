@@ -61,6 +61,18 @@ test('report normalization drops typed topics without evidence', () => {
   assert.equal(report.topics.length, 0)
 })
 
+test('report normalization recomputes imported quality metadata from evidence', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-quality',
+    contentType: 'price_change',
+    status: 'confirmed',
+    freshness: 'fresh',
+    evidence: [{ source: 'Reddit', label: 'community', excerpt: 'A general discussion without pricing facts', url: 'https://reddit.com/r/example/1' }],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 0)
+})
+
 test('report normalization does not trust elevated tiers from non-official imported evidence', () => {
   const report = normalizeReport({ topics: [{
     id: 'forged-tier',
@@ -72,6 +84,15 @@ test('report normalization does not trust elevated tiers from non-official impor
 
   assert.equal(report.topics.length, 1)
   assert.equal(report.topics[0].evidence[0].trustTier, 'community')
+})
+
+test('report normalization drops forged trust tiers without corroboration', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-tier-solo',
+    evidence: [{ source: 'Reddit', label: 'community', trustTier: 'primary', excerpt: 'How to configure Ollama context limits', url: 'https://reddit.com/r/example/1' }],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 0)
 })
 
 test('evidence always contains every corroborating channel before extra posts', () => {
@@ -169,7 +190,7 @@ test('worker carries compact history and promotes only a qualifying multi-day pa
   assert.equal(dayTwo.topicHistory.length, 3)
 })
 
-test('report normalization preserves optional briefing quality fields and single official reports', () => {
+test('report normalization recomputes briefing quality fields for single official reports', () => {
   const recurrence = { authorCount: 3, publisherCount: 2, mentionCount: 4, firstSeenAt: '2026-08-25T12:00:00.000Z', lastSeenAt: '2026-08-27T12:00:00.000Z', windowHours: 48 }
   const topicHistory = [{ fingerprint: 'topic-fnv1a-12345678', reportDate: '2026-08-27', seenAt: '2026-08-27T12:00:00.000Z', authorKey: 'vendor', publisherId: 'vendor', contentHash: 'release-hash' }]
   const report = normalizeReport({
@@ -191,7 +212,7 @@ test('report normalization preserves optional briefing quality fields and single
   assert.equal(report.topics.length, 1)
   assert.equal(report.topics[0].contentType, 'product_update')
   assert.equal(report.topics[0].status, 'reported')
-  assert.equal(report.topics[0].freshness, 'aging')
+  assert.equal(report.topics[0].freshness, 'fresh')
   assert.equal(report.topics[0].lastVerifiedAt, '2026-08-20T12:00:00.000Z')
   assert.deepEqual(report.topics[0].priceKeys, ['vendor-pro-usd-year'])
   assert.deepEqual(report.topics[0].recurrence, recurrence)
