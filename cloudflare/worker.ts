@@ -399,17 +399,6 @@ function validIsoDate(value: unknown) {
   return typeof value === 'string' && Number.isFinite(Date.parse(value))
 }
 
-function importedTrustTier(item: any) {
-  const sourceKind = String(item?.source || '')
-  if (!OFFICIAL_SOURCE_KINDS.includes(sourceKind)) return 'community'
-  try {
-    const catalog = getOfficialSource(item?.sourceKey)
-    return catalog.kind === sourceKind ? catalog.trustTier : 'community'
-  } catch {
-    return 'community'
-  }
-}
-
 function independentKey(post: Pick<Message, 'source' | 'sourceId' | 'sourceKey' | 'publisherId' | 'independenceKey'>) { return independenceKeyFor(post) }
 
 export function applyModelSummaries(topics: any[], modelTopics: any[]) {
