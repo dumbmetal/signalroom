@@ -9,6 +9,8 @@ const post = (sourceId, text, hour, id, overrides = {}) => ({
   source: 'Telegram', sourceId, text, engagement: 100, publishedAt: `2026-08-27T${String(hour).padStart(2, '0')}:00:00.000Z`, url: `https://t.me/${sourceId}/${id}`,
   ...overrides,
 })
+
+const redditFeed = (entries) => `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">${entries.map((entry) => `<entry><author><name>/u/${entry.author || 'tester'}</name></author><content type="html">&lt;p&gt;${entry.body || ''}&lt;/p&gt;</content><id>t3_${entry.id}</id><link href="${entry.url || `https://www.reddit.com/comments/${entry.id}/`}" /><published>${entry.publishedAt}</published><title>${entry.title}</title></entry>`).join('')}</feed>`
 const reportDateForTest = (value) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(value)
 
 test('production topic builder excludes single-channel chatter', () => {
@@ -214,12 +216,11 @@ test('worker reads and writes bounded report history instead of using only lates
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (url) => {
     const isAlpha = String(url).includes('/r/alpha/')
-    return new Response(JSON.stringify({ data: { children: [{ data: {
-      name: isAlpha ? 'current-alpha' : 'current-beta',
+    return new Response(redditFeed([{
+      id: isAlpha ? 'current-alpha' : 'current-beta',
       title: isAlpha ? 'Context inference local long memory pressure runtime' : 'Context inference local long memory pressure benchmark',
-      selftext: '', permalink: isAlpha ? '/r/alpha/current-alpha' : '/r/beta/current-beta',
-      created_utc: Math.floor(now.getTime() / 1000), score: 1,
-    } }] } }))
+      publishedAt: now.toISOString(),
+    }]))
   }
   try {
     const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
@@ -382,7 +383,11 @@ test('worker crawl propagates configured independence keys into corroborating ev
   const reports = new Map()
   globalThis.fetch = async (url) => {
     const alpha = String(url).includes('alpha')
-    return new Response(JSON.stringify({ data: { children: [{ data: { name: alpha ? 'a' : 'b', title: alpha ? 'Model subscription billing changed for teams' : 'Model subscription billing changed for team plans', selftext: '', permalink: alpha ? '/r/alpha/a' : '/r/beta/b', created_utc: now, score: 1 } }] } }))
+    return new Response(redditFeed([{
+      id: alpha ? 'a' : 'b',
+      title: alpha ? 'Model subscription billing changed for teams' : 'Model subscription billing changed for team plans',
+      publishedAt: new Date(now * 1000).toISOString(),
+    }]))
   }
   try {
     const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {

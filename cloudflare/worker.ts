@@ -3,6 +3,7 @@ import { getOfficialSource, OFFICIAL_SOURCE_KINDS } from '../shared/official-sou
 import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
 import { mergePriceSnapshots } from '../shared/price-snapshots.mjs'
 import { dedupeNearDuplicates, enrichTopic, enrichTopicsWithHistory, isReportableTopic, topicHistoryFromReports } from '../shared/briefing-quality.mjs'
+import { fetchRedditHotFeed, parseRedditFeed, redditHotFeedUrl } from '../shared/reddit-feed.mjs'
 
 export const BRIEFING_HISTORY_KEY = 'briefing-history'
 const HISTORY_MAX_REPORTS = 30
@@ -26,7 +27,6 @@ interface Env {
 type Message = { source: string; sourceId: string; externalId?: string; sourceKey?: string; publisherId?: string; independenceKey?: string; trustTier?: string; canonicalUrl?: string; contentHash?: string; author?: string; priceKeys?: string[]; text: string; url: string; publishedAt: string; engagement: number }
 type TopicCluster = { terms: Set<string>; posts: Message[]; postTerms: Array<{ sourceId: string; independenceKey: string; terms: string[] }> }
 type TelegramResponse = { result?: any[] }
-type RedditResponse = { data?: { children?: Array<{ data: any }> } }
 type SocialResponse = { data?: any[] }
 type OpenAIResponse = { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }
 
@@ -149,8 +149,8 @@ async function fetchSource(source: any, env: Env, since: string): Promise<any> {
   }
   if (source.kind === 'Reddit') {
     const subreddit = source.config?.subreddit || source.name
-    const response = await request<RedditResponse>(`https://www.reddit.com/r/${encodeURIComponent(subreddit)}/hot.json?limit=50`, { headers: { 'User-Agent': 'signalroom-cloudflare/1.0' } })
-    return (response.data?.children || []).map(({ data }: any) => ({ externalId: data.name, source: 'Reddit', sourceId: `r/${subreddit}`, author: data.author || `r/${subreddit}`, text: `${data.title}. ${data.selftext || ''}`, url: `https://reddit.com${data.permalink}`, publishedAt: new Date(data.created_utc * 1000).toISOString(), engagement: data.score || 0 }))
+    const xml = await fetchRedditHotFeed(redditHotFeedUrl(subreddit, 50), { userAgent: 'signalroom-cloudflare/1.0' })
+    return parseRedditFeed(xml).map((entry) => ({ externalId: entry.externalId, source: 'Reddit', sourceId: `r/${subreddit}`, author: entry.author || `r/${subreddit}`, text: `${entry.title}. ${entry.body}`, url: entry.url, publishedAt: entry.publishedAt, engagement: 0 }))
   }
   if (source.kind === 'X') {
     if (!env.X_BEARER_TOKEN) throw new Error('X_BEARER_TOKEN missing')
