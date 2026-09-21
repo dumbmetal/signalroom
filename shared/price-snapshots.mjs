@@ -3,6 +3,7 @@ import { fingerprintText } from './briefing-contract.mjs'
 const BILLING_PERIODS = new Set(['month', 'year', 'one_time', 'usage'])
 const TAX_MODES = new Set(['included', 'excluded', 'unknown'])
 const PRICE_TRUST_TIERS = new Set(['primary', 'maintainer'])
+const PRICE_TRUST_PRIORITY = new Map([['primary', 2], ['maintainer', 1]])
 const ZERO_DECIMAL_CURRENCIES = new Set(['KRW', 'JPY'])
 
 export function amountToMinorUnits(value, currency) {
@@ -82,9 +83,14 @@ export function mergePriceSnapshots(previous = [], observed = []) {
     else {
       const currentIsNewer = Date.parse(item.lastVerifiedAt) >= Date.parse(existing.lastVerifiedAt)
       const newest = currentIsNewer ? item : existing
+      const provenance = preferredProvenance(existing, item)
       signatures.set(signature, {
         ...existing,
         ...newest,
+        sourceUrl: provenance.sourceUrl,
+        sourceKey: provenance.sourceKey,
+        publisherId: provenance.publisherId,
+        trustTier: provenance.trustTier,
         observedAt: Date.parse(item.observedAt) < Date.parse(existing.observedAt) ? item.observedAt : existing.observedAt,
         lastVerifiedAt: Date.parse(item.lastVerifiedAt) > Date.parse(existing.lastVerifiedAt) ? item.lastVerifiedAt : existing.lastVerifiedAt,
       })
@@ -96,6 +102,16 @@ export function mergePriceSnapshots(previous = [], observed = []) {
   return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, signatures]) =>
     [...signatures.values()].sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt) || priceObservationSignature(a).localeCompare(priceObservationSignature(b))).slice(0, 2),
   )
+}
+
+function preferredProvenance(left, right) {
+  const leftPriority = PRICE_TRUST_PRIORITY.get(left.trustTier) || 0
+  const rightPriority = PRICE_TRUST_PRIORITY.get(right.trustTier) || 0
+  if (leftPriority !== rightPriority) return leftPriority > rightPriority ? left : right
+  const leftVerifiedAt = Date.parse(left.lastVerifiedAt)
+  const rightVerifiedAt = Date.parse(right.lastVerifiedAt)
+  if (leftVerifiedAt !== rightVerifiedAt) return leftVerifiedAt >= rightVerifiedAt ? left : right
+  return String(left.sourceKey).localeCompare(String(right.sourceKey)) <= 0 ? left : right
 }
 
 function normalizePromotion(value) {

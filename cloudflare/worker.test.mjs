@@ -44,6 +44,59 @@ test('report normalization keeps URL-only legacy evidence from independent sourc
   assert.equal(report.topics[0].independentSourceCount, 2)
 })
 
+test('report normalization recomputes imported content hashes before corroboration', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-hash',
+    evidence: [
+      { source: 'Reddit', label: 'alpha', excerpt: 'Alpha independently reports the model release', url: 'https://reddit.com/r/alpha/1', contentHash: 'same-forged-hash' },
+      { source: 'Threads', label: 'beta', excerpt: 'Beta independently reports the model release', url: 'https://threads.net/@beta/1', contentHash: 'same-forged-hash' },
+    ],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].independentSourceCount, 2)
+})
+
+test('report normalization drops typed topics without evidence', () => {
+  const report = normalizeReport({ topics: [{ id: 'empty', contentType: 'price_change', evidence: [] }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 0)
+})
+
+test('report normalization recomputes imported quality metadata from evidence', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-quality',
+    contentType: 'price_change',
+    status: 'confirmed',
+    freshness: 'fresh',
+    evidence: [{ source: 'Reddit', label: 'community', excerpt: 'A general discussion without pricing facts', url: 'https://reddit.com/r/example/1' }],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 0)
+})
+
+test('report normalization does not trust elevated tiers from non-official imported evidence', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-tier',
+    evidence: [
+      { source: 'Reddit', label: 'community', trustTier: 'primary', excerpt: 'Community evidence one', url: 'https://reddit.com/r/example/1' },
+      { source: 'Threads', label: 'independent', excerpt: 'Independent evidence two', url: 'https://threads.net/@example/2' },
+    ],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 1)
+  assert.equal(report.topics[0].evidence[0].trustTier, 'community')
+})
+
+test('report normalization drops forged trust tiers without corroboration', () => {
+  const report = normalizeReport({ topics: [{
+    id: 'forged-tier-solo',
+    evidence: [{ source: 'Reddit', label: 'community', trustTier: 'primary', excerpt: 'How to configure Ollama context limits', url: 'https://reddit.com/r/example/1' }],
+  }], sourceRuns: [] })
+
+  assert.equal(report.topics.length, 0)
+})
+
 test('evidence always contains every corroborating channel before extra posts', () => {
   const manyAlpha = Array.from({ length: 7 }, (_, index) => post('alpha', `BTC ETF inflow update ${index}`, 20 - index, index + 1))
   const topics = buildTopics([...manyAlpha, post('beta', 'BTC ETF inflow update confirmed', 10, 99)])
@@ -257,7 +310,7 @@ test('worker preserves prior history when a configured source fails', async () =
   }
 })
 
-test('report normalization preserves optional briefing quality fields and single official reports', () => {
+test('report normalization recomputes briefing quality fields for single official reports', () => {
   const recurrence = { authorCount: 3, publisherCount: 2, mentionCount: 4, firstSeenAt: '2026-08-25T12:00:00.000Z', lastSeenAt: '2026-08-27T12:00:00.000Z', windowHours: 48 }
   const topicHistory = [{ fingerprint: 'topic-fnv1a-12345678', reportDate: '2026-08-27', seenAt: '2026-08-27T12:00:00.000Z', authorKey: 'vendor', publisherId: 'vendor', contentHash: 'release-hash' }]
   const report = normalizeReport({
@@ -279,7 +332,7 @@ test('report normalization preserves optional briefing quality fields and single
   assert.equal(report.topics.length, 1)
   assert.equal(report.topics[0].contentType, 'product_update')
   assert.equal(report.topics[0].status, 'reported')
-  assert.equal(report.topics[0].freshness, 'aging')
+  assert.equal(report.topics[0].freshness, 'fresh')
   assert.equal(report.topics[0].lastVerifiedAt, '2026-08-20T12:00:00.000Z')
   assert.deepEqual(report.topics[0].priceKeys, ['vendor-pro-usd-year'])
   assert.deepEqual(report.topics[0].recurrence, recurrence)
@@ -374,7 +427,7 @@ test('worker collects allowlisted official sources and merges prices with latest
   try {
     const response = await worker.fetch(new Request('https://signalroom.test/api/crawl?summary=off', { method: 'POST' }), {
       REPORTS: reports,
-      OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'openai-chatgpt-plus-usd', 'ollama-releases']),
+      OFFICIAL_SOURCES: JSON.stringify(['openai-news', 'openai-news', 'openai-chatgpt-plus-usd', 'ollama-releases']),
     })
     const report = await response.json()
 
@@ -384,6 +437,7 @@ test('worker collects allowlisted official sources and merges prices with latest
     assert.equal(feed.source, 'OpenAI News')
     assert.equal(feed.status, 'ok')
     assert.equal(feed.count, 1)
+    assert.equal(report.sourceRuns.filter((run) => run.sourceId === 'openai-news').length, 1)
     const failed = report.sourceRuns.find((run) => run.sourceId === 'ollama-releases')
     assert.equal(failed.status, 'error')
     assert.doesNotMatch(failed.error, /cookie|token|secret|response body|https?:/i)
