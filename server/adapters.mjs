@@ -1,6 +1,7 @@
 import { normalizeMessage } from './pipeline.mjs'
 import { collectOfficialSource } from '../shared/official-source-parsers.mjs'
 import { resolveOfficialSource } from '../shared/official-source-catalog.mjs'
+import { fetchRedditHotFeed, parseRedditFeed, redditHotFeedUrl } from '../shared/reddit-feed.mjs'
 
 export function createAdapters(env = process.env) {
   const officialAdapter = (kind) => ({
@@ -12,7 +13,7 @@ export function createAdapters(env = process.env) {
     fetchSince: (source, since) => collectOfficialSource(source, { since }),
   })
   return {
-    Reddit: { kind: 'Reddit', health: () => ({ ok: true, message: 'Public JSON access' }), fetchSince: (source, since) => fetchReddit(source, since, env) },
+    Reddit: { kind: 'Reddit', health: () => ({ ok: true, message: 'Public RSS access' }), fetchSince: (source, since) => fetchReddit(source, since, env) },
     X: { kind: 'X', health: () => ({ ok: Boolean(env.X_BEARER_TOKEN), message: env.X_BEARER_TOKEN ? 'Configured' : 'X_BEARER_TOKEN missing' }), fetchSince: (source, since) => fetchX(source, since, env) },
     Threads: { kind: 'Threads', health: () => ({ ok: Boolean(env.THREADS_ACCESS_TOKEN), message: env.THREADS_ACCESS_TOKEN ? 'Configured' : 'THREADS_ACCESS_TOKEN missing' }), fetchSince: (source, since) => fetchThreads(source, since, env) },
     Telegram: { kind: 'Telegram', health: () => ({ ok: Boolean(env.TELEGRAM_BOT_TOKEN), message: env.TELEGRAM_BOT_TOKEN ? 'Bot configured' : 'TELEGRAM_BOT_TOKEN missing' }), fetchSince: (source, since) => fetchTelegram(source, since, env) },
@@ -24,10 +25,10 @@ export function createAdapters(env = process.env) {
 
 async function fetchReddit(source, since, env) {
   const subreddit = source.config?.subreddit || source.detail?.replace(/^r\//, '') || source.name
-  const response = await request(`https://www.reddit.com/r/${encodeURIComponent(subreddit)}/hot.json?limit=${source.config?.limit || 50}`, { headers: { 'User-Agent': env.REDDIT_USER_AGENT || 'signalroom/0.1' } })
-  return (response.data?.children || []).map(({ data }) => normalizeMessage({
-    id: data.name, source: 'Reddit', sourceId: `r/${subreddit}`, author: `u/${data.author}`, text: `${data.title}. ${data.selftext || ''}`,
-    url: `https://reddit.com${data.permalink}`, publishedAt: new Date(data.created_utc * 1000), engagement: { score: data.score, replies: data.num_comments },
+  const xml = await fetchRedditHotFeed(redditHotFeedUrl(subreddit, source.config?.limit || 50), { userAgent: env.REDDIT_USER_AGENT || 'signalroom/0.1' })
+  return parseRedditFeed(xml).map((entry) => normalizeMessage({
+    id: entry.externalId, source: 'Reddit', sourceId: `r/${subreddit}`, author: entry.author, text: `${entry.title}. ${entry.body}`,
+    url: entry.url, publishedAt: new Date(entry.publishedAt), engagement: { score: 0, replies: 0 },
   })).filter((message) => new Date(message.publishedAt) >= new Date(since))
 }
 
