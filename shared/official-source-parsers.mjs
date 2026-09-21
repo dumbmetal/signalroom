@@ -78,8 +78,9 @@ export function parseOfficialPricing(source, body, observedAt = new Date().toISO
   const observations = []
   const warnings = []
   for (const plan of source.pricing.plans || []) {
-    const planText = extractPricingCard(body, plan.cardHeading)
-    const amount = findPlanAmount(planText, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition, plan.unitPattern, plan.forbidUnitPattern)
+    const scopedBody = extractElementById(body, plan.scope)
+    const planText = scopedBody ? cleanMarkup(scopedBody) : extractPricingCard(body, plan.cardHeading)
+    const amount = findPlanAmount(planText, plan.aliases || [plan.plan], source.pricing.currency, plan.billingPeriod, plan.amountPosition, plan.unitPattern, plan.forbidUnitPattern, Boolean(scopedBody))
     if (amount === null) {
       if (plan.required !== false) warnings.push(`Missing required plan: ${plan.plan}`)
       continue
@@ -203,13 +204,18 @@ function parseLmStudioChangelog(source, body, since) {
   return normalizeFeedItems(source, items, since)
 }
 
-function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after', unitPattern = '', forbidUnitPattern = '') {
+function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition = 'after', unitPattern = '', forbidUnitPattern = '', scopeAnchored = false) {
   if (!text) return null
   const periods = billingPeriod === 'month' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:month|mo|월)|per\s+month|monthly|if\s+billed\s+monthly|billed\s+monthly)` : billingPeriod === 'year' ? String.raw`(?:\/\s*(?:(?:seat|user)\s*\/\s*)?(?:year|yr|년)|per\s+year|annually|billed\s+up\s+front)` : ''
   const suffixUnit = String.raw`(?:\s*(?:\/\s*|per\s+)(?:seat|user))?`
   const amountPattern = String(currency).toUpperCase() === 'KRW'
     ? `(?:₩\\s*([0-9][0-9,]*(?:\\.\\d+)?)|([0-9][0-9,]*(?:\\.\\d+)?)\\s*원)\\s*${periods}${suffixUnit}`
     : `(?:US\\s*)?\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s*${periods}${suffixUnit}`
+  const accepted = (match) => {
+    const matchedText = match?.[0]?.toLowerCase() || ''
+    return Boolean(match) && (!unitPattern || matchedText.includes(String(unitPattern).toLowerCase())) && (!forbidUnitPattern || !matchedText.includes(String(forbidUnitPattern).toLowerCase()))
+  }
+  let anchored = false
   for (const alias of aliases) {
     const haystack = text.toLowerCase()
     const needle = String(alias).toLowerCase()
@@ -217,15 +223,20 @@ function findPlanAmount(text, aliases, currency, billingPeriod, amountPosition =
     while (needle && offset < haystack.length) {
       const index = haystack.indexOf(needle, offset)
       if (index < 0) break
+      anchored = true
       const window = amountPosition === 'before'
         ? text.slice(Math.max(0, index - 2_000), index + needle.length)
         : text.slice(index, index + 2_000)
       const matches = [...window.matchAll(new RegExp(amountPattern, 'ig'))]
       const match = amountPosition === 'before' ? matches.at(-1) : matches[0]
-      const matchedText = match?.[0]?.toLowerCase() || ''
-      if (match && (!unitPattern || matchedText.includes(String(unitPattern).toLowerCase())) && (!forbidUnitPattern || !matchedText.includes(String(forbidUnitPattern).toLowerCase()))) return match.slice(1).find(Boolean) || null
+      if (accepted(match)) return match.slice(1).find(Boolean) || null
       offset = index + needle.length
     }
+  }
+  if (!anchored && scopeAnchored) {
+    const matches = [...text.slice(0, 4_000).matchAll(new RegExp(amountPattern, 'ig'))]
+    const match = amountPosition === 'before' ? matches.at(-1) : matches[0]
+    if (accepted(match)) return match.slice(1).find(Boolean) || null
   }
   return null
 }
@@ -240,6 +251,19 @@ function extractPricingCard(body, heading) {
   nextHeadingPattern.lastIndex = match.index + match[0].length
   const next = nextHeadingPattern.exec(String(body || ''))
   return cleanMarkup(String(body || '').slice(match.index, next?.index || String(body || '').length))
+}
+
+function extractElementById(body, id) {
+  const escapedId = String(id || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (!escapedId) return ''
+  const html = String(body || '')
+  const open = new RegExp(`<(?:div|section|article|li)\\b[^>]*\\bid=["']${escapedId}["'][^>]*>`, 'i').exec(html)
+  if (!open) return ''
+  const from = open.index + open[0].length
+  const boundary = /<(?:div|section|article|li)\b[^>]*\bid=["']|<h[1-6]\b/ig
+  boundary.lastIndex = from
+  const next = boundary.exec(html)
+  return html.slice(from, next ? next.index : html.length)
 }
 
 function tagText(block, names) {

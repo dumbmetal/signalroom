@@ -190,18 +190,28 @@ test('extracts Ollama cloud subscription prices and annual discount from the off
   assert.equal(proMonthly.amountMinor, 2_000)
   assert.equal(proAnnual.amountMinor, 20_000)
   assert.deepEqual(proAnnual.promotion, { kind: 'discount', label: 'Annual billing', originalAmountMinor: 24_000 })
-  assert.equal(team.amountMinor, 2_500)
-  assert.equal(team.unit, 'seat')
-  assert.deepEqual(team.promotion, { kind: 'introductory', label: 'Introductory pricing' })
+  assert.equal(team.amountMinor, 50_000)
+  assert.equal(team.unit, 'user')
+  assert.equal(team.promotion, undefined)
   assert.throws(() => parseOfficialPricing(source, '<html><h1>Pricing temporarily unavailable</h1></html>', '2026-08-31T10:00:00.000Z'), /none of the required plans/i)
 })
 
 test('official pricing fails closed per plan card instead of borrowing another plan price', () => {
   const source = getOfficialSource('ollama-cloud-pricing')
-  const drifted = '<section><h2>Pro</h2><p>Pricing temporarily unavailable</p></section><section><h2>Team</h2><p>Introductory pricing: $25 / seat / mo</p></section>'
+  const drifted = '<section><h2>Pro</h2><p>Pricing temporarily unavailable</p></section><section><h2>Team</h2><p>$500 / mo.</p></section>'
   const parsed = parseOfficialPricing(source, drifted, '2026-08-31T10:00:00.000Z')
 
   assert.equal(parsed.observations.some((item) => item.plan === 'Pro'), false)
-  assert.equal(parsed.observations.find((item) => item.plan === 'Team')?.amountMinor, 2_500)
+  assert.equal(parsed.observations.find((item) => item.plan === 'Team')?.amountMinor, 50_000)
   assert.ok(parsed.warnings.includes('Missing required plan: Pro'))
+})
+
+test('reads a scoped pricing card whose plan name sits outside the amount container', () => {
+  const source = getOfficialSource('ollama-cloud-pricing')
+  const tabbed = '<section><h2 id="plan-title-pro" class="hidden">Pro</h2><div id="plan-header-pro"><span data-billing="month">$24 <span>/ mo.</span></span></div><div id="plan-body-pro"><ul><li>Local models</li></ul></div></section>'
+  const parsed = parseOfficialPricing(source, tabbed, '2026-09-22T00:00:00.000Z')
+
+  assert.equal(parsed.observations.find((item) => item.plan === 'Pro')?.amountMinor, 2_400)
+  assert.equal(parsed.observations.some((item) => item.plan === 'Pro annual'), false)
+  assert.ok(parsed.warnings.includes('Missing required plan: Pro annual'))
 })

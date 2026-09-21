@@ -4,12 +4,30 @@
     <main>
       <h1>Pricing</h1>
       <section>
-        <h2>Pro</h2>
-        <p>$20 / mo or $200/yr billed annually</p>
+        <div>
+          <h2 id="plan-title-pro" class="text-xl font-medium">Pro</h2>
+          <h2 id="plan-title-max" class="text-xl font-medium hidden">Max</h2>
+          <div role="tablist" aria-label="Individual plans">
+            <button type="button" id="plan-pro-tab">Pro</button>
+            <button type="button" id="plan-max-tab">Max</button>
+          </div>
+        </div>
+        <div id="plan-header-pro">
+          <div>
+            <span data-billing="month">$20 <span>/ mo. or $200/yr billed <a href="/upgrade?plan=pro&amp;interval=year">annually</a></span></span>
+            <span data-billing="year" class="hidden">$16.67 <span>/ mo. billed annually</span></span>
+          </div>
+          <p>For larger models and longer context.</p>
+        </div>
+        <div id="plan-body-pro">
+          <ul><li>Unlimited local models</li></ul>
+        </div>
       </section>
       <section>
-        <h2>Team</h2>
-        <p>Introductory pricing: $25 / seat / mo</p>
+        <h2 class="text-xl font-medium">Team</h2>
+        <span class="rounded-full">Early access</span>
+        <div>$500 <span>/ mo.</span></div>
+        <p>Unlimited users</p>
       </section>
     </main>
   </body>
